@@ -62,16 +62,19 @@ def settle(from_user: int, to_user: int, currency: str, amount: Decimal, fee: De
     tx = wallet.settle(from_user, to_user, currency, amount, fee)
     return {"tx": tx}
 
-@app.get("/balances/{user_id}")
+@app.get('/balances/{user_id}')
 def balances(user_id: int):
     db = SessionLocal()
     try:
         rows = db.query(models.Wallet).filter(models.Wallet.user_id == user_id).all()
         return [
             {
-                "currency": r.currency,
-                "available": str(r.available),
-                "reserved": str(r.reserved),
+                'currency': r.currency,
+                'available': str(r.available),
+                'reserved': str(r.reserved)
             }
             for r in rows
+        ]
+    finally:
+        db.close()
 
