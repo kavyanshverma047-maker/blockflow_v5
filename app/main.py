@@ -1,5 +1,11 @@
-
 from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"message": "Blockflow backend is live 🚀"}
+
 from fastapi.middleware.cors import CORSMiddleware
 
 # STEP 3: create the FastAPI app
