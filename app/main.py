@@ -77,4 +77,34 @@ def balances(user_id: int):
         ]
     finally:
         db.close()
+import requests
+
+@app.get("/markets")
+def get_markets():
+    try:
+        # Fetch live prices from Binance (USDT pairs)
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        prices = {}
+
+        for symbol in symbols:
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+            resp = requests.get(url).json()
+            prices[symbol] = float(resp["price"])
+
+        # Get USD/INR conversion
+        forex_url = "https://api.exchangerate.host/latest?base=USD&symbols=INR"
+        forex_resp = requests.get(forex_url).json()
+        usd_inr = forex_resp["rates"]["INR"]
+
+        # Convert to INR
+        markets = [
+            {"symbol": "BTC-INR", "price": round(prices["BTCUSDT"] * usd_inr, 2)},
+            {"symbol": "ETH-INR", "price": round(prices["ETHUSDT"] * usd_inr, 2)},
+            {"symbol": "SOL-INR", "price": round(prices["SOLUSDT"] * usd_inr, 2)},
+        ]
+
+        return markets
+
+    except Exception as e:
+        return {"error": str(e)}
 
