@@ -130,6 +130,5 @@ def reset_balance(username: str, db: Session = Depends(database.SessionLocal)):
     return {"message": "Balance reset", "balance": user.balance}
 
 
-    except Exception as e:
-        return {"error": str(e)}
+   
 
