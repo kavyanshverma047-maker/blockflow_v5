@@ -1,109 +1,106 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Depends
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from decimal import Decimal
-from .db import Base, engine, SessionLocal
-from . import models, ledger, wallet
 
-# Create the FastAPI app (only once)
-app = FastAPI(title='Blockflow v5 Ledger Demo')
+from . import models, database
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://vibe-1758132969629.vercel.app",  # frontend
-        "http://localhost:3000",                  # local dev
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# create tables
+models.Base.metadata.create_all(bind=database.engine)
 
-# Ensure DB and tables exist
-Base.metadata.create_all(bind=engine)
+app = FastAPI(title="Blockflow Demo Exchange API")
 
-# --------- Routes ---------
-@app.get("/")
-def home():
-    return {"message": "Blockflow backend is live 🚀"}
 
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+class TradeRequest(BaseModel):
+    username: str
+    side: str    # "buy" or "sell"
+    pair: str = "BTC/USDT"
+    amount: float
+    price: float
 
-class DepositIn(BaseModel):
-    user_id: int
-    currency: str
-    amount: Decimal
 
-class ReserveIn(BaseModel):
-    user_id: int
-    currency: str
-    amount: Decimal
+@app.post("/trade")
+def place_trade(trade: TradeRequest, db: Session = Depends(database.SessionLocal)):
+    # get or create user
+    user = db.query(models.User).filter(models.User.username == trade.username).first()
+    if not user:
+        user = models.User(username=trade.username)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
-@app.post("/deposit")
-def deposit(p: DepositIn):
-    wallet.deposit(p.user_id, p.currency, p.amount)
-    return {"ok": True}
+    cost = trade.amount * trade.price
 
-@app.post("/reserve")
-def reserve(p: ReserveIn):
-    tx = wallet.reserve(p.user_id, p.currency, p.amount)
-    return {"tx": tx}
+    if trade.side.lower() == "buy":
+        if user.balance < cost:
+            return {"error": "Insufficient balance", "balance": user.balance}
+        user.balance -= cost
+    elif trade.side.lower() == "sell":
+        user.balance += cost
+    else:
+        return {"error": "Invalid trade side", "balance": user.balance}
 
-@app.post("/release")
-def release(p: ReserveIn):
-    tx = wallet.release(p.user_id, p.currency, p.amount)
-    return {"tx": tx}
+    new_trade = models.Trade(
+        user_id=user.id,
+        side=trade.side.lower(),
+        pair=trade.pair,
+        amount=trade.amount,
+        price=trade.price,
+    )
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
 
-@app.post("/settle_trade")
-def settle(from_user: int, to_user: int, currency: str, amount: Decimal, fee: Decimal = 0):
-    tx = wallet.settle(from_user, to_user, currency, amount, fee)
-    return {"tx": tx}
+    return {
+        "message": "Trade executed",
+        "balance": user.balance,
+        "trade": {
+            "id": new_trade.id,
+            "side": new_trade.side,
+            "pair": new_trade.pair,
+            "amount": new_trade.amount,
+            "price": new_trade.price,
+            "timestamp": new_trade.timestamp.isoformat(),
+        }
+    }
 
-@app.get('/balances/{user_id}')
-def balances(user_id: int):
-    db = SessionLocal()
-    try:
-        rows = db.query(models.Wallet).filter(models.Wallet.user_id == user_id).all()
-        return [
-            {
-                'currency': r.currency,
-                'available': str(r.available),
-                'reserved': str(r.reserved)
-            }
-            for r in rows
-        ]
-    finally:
-        db.close()
-import requests
 
-@app.get("/markets")
-def get_markets():
-    try:
-        # Fetch live prices from Binance (USDT pairs)
-        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-        prices = {}
+@app.get("/portfolio/{username}")
+def get_portfolio(username: str, db: Session = Depends(database.SessionLocal)):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        return {"error": "User not found"}
+    return {"username": user.username, "balance": user.balance}
 
-        for symbol in symbols:
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-            resp = requests.get(url).json()
-            prices[symbol] = float(resp["price"])
 
-        # Get USD/INR conversion
-        forex_url = "https://api.exchangerate.host/latest?base=USD&symbols=INR"
-        forex_resp = requests.get(forex_url).json()
-        usd_inr = forex_resp["rates"]["INR"]
+@app.get("/orders/{username}")
+def get_orders(username: str, db: Session = Depends(database.SessionLocal)):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        return {"error": "User not found"}
+    trades = db.query(models.Trade).filter(models.Trade.user_id == user.id).order_by(models.Trade.timestamp.desc()).all()
+    return [
+        {
+            "id": t.id,
+            "side": t.side,
+            "pair": t.pair,
+            "amount": t.amount,
+            "price": t.price,
+            "timestamp": t.timestamp.isoformat()
+        }
+        for t in trades
+    ]
 
-        # Convert to INR
-        markets = [
-            {"symbol": "BTC-INR", "price": round(prices["BTCUSDT"] * usd_inr, 2)},
-            {"symbol": "ETH-INR", "price": round(prices["ETHUSDT"] * usd_inr, 2)},
-            {"symbol": "SOL-INR", "price": round(prices["SOLUSDT"] * usd_inr, 2)},
-        ]
 
-        return markets
+@app.post("/reset/{username}")
+def reset_balance(username: str, db: Session = Depends(database.SessionLocal)):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        user = models.User(username=username, balance=1_000_000.0)
+        db.add(user)
+    else:
+        user.balance = 1_000_000.0
+    db.commit()
+    return {"message": "Balance reset", "balance": user.balance}
 
     except Exception as e:
         return {"error": str(e)}
