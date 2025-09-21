@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
 
+# ✅ Demo Trading Models
 class User(Base):
     __tablename__ = "users"
 
@@ -26,4 +27,5 @@ class Trade(Base):
 
     user = relationship("User", back_populates="trades")
 
-  
+
+# ✅ Keep your existing Ledger models here (Deposits, Reserves, etc.)
