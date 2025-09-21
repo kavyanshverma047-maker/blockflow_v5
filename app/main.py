@@ -1,14 +1,18 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from datetime import datetime
 
 from . import models, database
 
-# create tables
+# ✅ init database
 models.Base.metadata.create_all(bind=database.engine)
 
-app = FastAPI(title="Blockflow Demo Exchange API")
+app = FastAPI(title="Blockflow v5 Ledger Demo + Trading API")
 
+# -------------------------------
+# 📌 Pydantic schemas
+# -------------------------------
 
 class TradeRequest(BaseModel):
     username: str
@@ -17,6 +21,28 @@ class TradeRequest(BaseModel):
     amount: float
     price: float
 
+
+# -------------------------------
+# ✅ Existing Ledger Endpoints
+# (Keep your /deposit, /reserve, /release, etc. here)
+# -------------------------------
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+@app.get("/home")
+def home():
+    return {"message": "Welcome to Blockflow v5 Ledger Demo"}
+
+# (⚡ NOTE: keep your existing /deposit, /reserve, /release, /settle_trade, /balances, /markets here.
+# I’m not rewriting them now since they’re already working on Render.
+# Just make sure you don’t delete them when pasting this new code.)
+ 
+
+# -------------------------------
+# ✅ New Trading Endpoints
+# -------------------------------
 
 @app.post("/trade")
 def place_trade(trade: TradeRequest, db: Session = Depends(database.SessionLocal)):
@@ -45,6 +71,7 @@ def place_trade(trade: TradeRequest, db: Session = Depends(database.SessionLocal
         pair=trade.pair,
         amount=trade.amount,
         price=trade.price,
+        timestamp=datetime.utcnow()
     )
     db.add(new_trade)
     db.commit()
@@ -59,7 +86,7 @@ def place_trade(trade: TradeRequest, db: Session = Depends(database.SessionLocal
             "pair": new_trade.pair,
             "amount": new_trade.amount,
             "price": new_trade.price,
-            "timestamp": new_trade.timestamp.isoformat(),
+            "timestamp": new_trade.timestamp.isoformat()
         }
     }
 
@@ -101,6 +128,7 @@ def reset_balance(username: str, db: Session = Depends(database.SessionLocal)):
         user.balance = 1_000_000.0
     db.commit()
     return {"message": "Balance reset", "balance": user.balance}
+
 
     except Exception as e:
         return {"error": str(e)}
