@@ -1,110 +1,79 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
 
-import app.models as models
-import app.database as database
+app = FastAPI(title="Blockflow v5 Ledger Demo + Trading API", version="0.2.0")
 
-# Initialize DB
-models.Base.metadata.create_all(bind=database.engine)
-
-app = FastAPI(title="Blockflow Demo Exchange")
-
-# Enable CORS
+# Allow frontend to call backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 🔥 later restrict to your Vercel domain
+    allow_origins=["*"],   # in prod: restrict to your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Pydantic schemas
-class TradeRequest(BaseModel):
-    username: str
-    side: str   # "buy" or "sell"
-    pair: str = "BTC/USDT"
-    amount: float
-    price: float
+# In-memory user store (demo only)
+USERS = {}
+
+# Health check
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
-# Place a trade
-@app.post("/trade")
-def place_trade(trade: TradeRequest, db: Session = Depends(database.SessionLocal)):
-    user = db.query(models.User).filter(models.User.username == trade.username).first()
-    if not user:
-        user = models.User(username=trade.username, balance=1_000_000.0)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    cost = trade.amount * trade.price
-
-    if trade.side == "buy":
-        if user.balance < cost:
-            raise HTTPException(status_code=400, detail="Insufficient balance")
-        user.balance -= cost
-    elif trade.side == "sell":
-        user.balance += cost
-
-    new_trade = models.Trade(
-        user_id=user.id,
-        side=trade.side,
-        pair=trade.pair,
-        amount=trade.amount,
-        price=trade.price,
-    )
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
-
-    return {
-        "message": "Trade executed",
-        "balance": user.balance,
-        "trade": {
-            "id": new_trade.id,
-            "side": new_trade.side,
-            "amount": new_trade.amount,
-            "price": new_trade.price,
-            "pair": new_trade.pair,
-        },
+# Reset a demo account
+@app.post("/reset/{username}")
+def reset(username: str):
+    USERS[username] = {
+        "balance": 10000,   # start every demo with $10,000
+        "orders": []
     }
+    return {"message": f"Demo account for {username} reset with $10000"}
 
 
 # Get portfolio
 @app.get("/portfolio/{username}")
-def get_portfolio(username: str, db: Session = Depends(database.SessionLocal)):
-    user = db.query(models.User).filter(models.User.username == username).first()
+def get_portfolio(username: str):
+    user = USERS.get(username)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"username": user.username, "balance": user.balance}
+        return {"balance": 0, "orders": []}
+    return {"balance": user["balance"], "orders": user["orders"]}
 
 
 # Get orders
 @app.get("/orders/{username}")
-def get_orders(username: str, db: Session = Depends(database.SessionLocal)):
-    user = db.query(models.User).filter(models.User.username == username).first()
+def get_orders(username: str):
+    user = USERS.get(username)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    trades = db.query(models.Trade).filter(models.Trade.user_id == user.id).all()
-    return [
-        {"id": t.id, "side": t.side, "amount": t.amount, "price": t.price, "pair": t.pair}
-        for t in trades
-    ]
+        return []
+    return user["orders"]
 
 
-# Reset balance
-@app.post("/reset/{username}")
-def reset_balance(username: str, db: Session = Depends(database.SessionLocal)):
-    user = db.query(models.User).filter(models.User.username == username).first()
+# Place trade
+@app.post("/trade")
+def place_trade(username: str, side: str, amount: float, price: float):
+    user = USERS.get(username)
     if not user:
-        user = models.User(username=username, balance=1_000_000.0)
-        db.add(user)
-    else:
-        user.balance = 1_000_000.0
-    db.commit()
-    return {"message": "Balance reset", "balance": user.balance}
+        return {"error": "User not found"}
+
+    cost = amount * price
+
+    if side == "buy":
+        if user["balance"] < cost:
+            return {"error": "Insufficient balance"}
+        user["balance"] -= cost
+        user["orders"].append({"side": "buy", "amount": amount, "price": price})
+
+    elif side == "sell":
+        # For demo, just credit balance (no inventory tracking yet)
+        user["balance"] += cost
+        user["orders"].append({"side": "sell", "amount": amount, "price": price})
+
+    return {
+        "message": f"{side} order placed",
+        "balance": user["balance"],
+        "orders": user["orders"]
+    }
 
    
 
