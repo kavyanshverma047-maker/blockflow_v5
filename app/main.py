@@ -3,6 +3,32 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
 import uuid
+from pydantic import BaseModel
+
+# ✅ Pydantic Schema
+class UserCreate(BaseModel):
+    username: str
+    email: str | None = None
+
+
+# ✅ Create user
+@app.post("/users")
+def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+
+    new_user = models.User(username=user.username, email=user.email)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+# ✅ List all users
+@app.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    return db.query(models.User).all()
 
 from app import models
 from app.database import Base, engine, SessionLocal
