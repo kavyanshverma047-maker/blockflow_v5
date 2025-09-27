@@ -3,57 +3,35 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
 import uuid
-from pydantic import BaseModel
-
-# ✅ Pydantic Schema
-class UserCreate(BaseModel):
-    username: str
-    email: str | None = None
-
-
-# ✅ Create user
-@app.post("/users")
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-
-    new_user = models.User(username=user.username, email=user.email)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
-
-
-# ✅ List all users
-@app.get("/users")
-def list_users(db: Session = Depends(get_db)):
-    return db.query(models.User).all()
 
 from app import models
 from app.database import Base, engine, SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
 
-# ---------------------------
-# DB Initialization
-# ---------------------------
-models.Base.metadata.create_all(bind=engine)
-
+# -----------------------------------------------------
+# Create FastAPI app
+# -----------------------------------------------------
 app = FastAPI(title="Blockflow Prototype Exchange")
 
-# Enable CORS (for frontend → backend calls)
+# -----------------------------------------------------
+# DB Initialization
+# -----------------------------------------------------
+models.Base.metadata.create_all(bind=engine)
+
+# -----------------------------------------------------
+# Enable CORS (for frontend calls)
+# -----------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later replace "*" with your Vercel frontend URL
+    allow_origins=["*"],  # TODO: restrict to frontend URL in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------
-# Dependencies
-# ---------------------------
-
+# -----------------------------------------------------
+# DB Dependency
+# -----------------------------------------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -61,10 +39,12 @@ def get_db():
     finally:
         db.close()
 
-
-# ---------------------------
+# -----------------------------------------------------
 # Schemas
-# ---------------------------
+# -----------------------------------------------------
+class UserCreate(BaseModel):
+    username: str
+    email: str | None = None
 
 class TradeRequest(BaseModel):
     username: str
@@ -83,18 +63,78 @@ class P2POrderRequest(BaseModel):
     limit_max: float
     payment_method: str
 
-
-# ---------------------------
-# Root Health Check
-# ---------------------------
-
+# -----------------------------------------------------
+# Root Healthcheck
+# -----------------------------------------------------
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "service": "Blockflow API",
-        "message": "Backend is running successfully 🚀"
-    }
+    return {"status": "ok", "service": "Blockflow API", "message": "Backend is running successfully 🚀"}
+
+# -----------------------------------------------------
+# USERS
+# -----------------------------------------------------
+@app.post("/users")
+def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+
+    new_user = models.User(username=user.username, email=user.email)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    return db.query(models.User).all()
+
+# -----------------------------------------------------
+# P2P (real logic)
+# -----------------------------------------------------
+@app.get("/p2p/orders")
+def list_p2p_orders(db: Session = Depends(get_db)):
+    return db.query(models.P2POrder).all()
+
+@app.post("/p2p/orders")
+def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == order.username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    cost = order.available * order.price
+    if order.type.lower() == "buy":
+        if getattr(user, "balance", 0) < cost:  # fallback if balance not implemented
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+        user.balance -= cost
+
+    new_order = models.P2POrder(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        type=order.type,
+        merchant=order.merchant,
+        price=order.price,
+        available=order.available,
+        limit_min=order.limit_min,
+        limit_max=order.limit_max,
+        payment_method=order.payment_method,
+    )
+    db.add(new_order)
+    db.commit()
+    db.refresh(new_order)
+    return new_order
+
+@app.delete("/p2p/orders/{order_id}")
+def delete_p2p_order(order_id: str, db: Session = Depends(get_db)):
+    order = db.query(models.P2POrder).filter(models.P2POrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    db.delete(order)
+    db.commit()
+    return {"status": "deleted"}
+
+
+
 
 
 # =====================================================
