@@ -1,12 +1,17 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from app.database import Base, engine, SessionLocal
+from typing import List
+import uuid
+
 from app import models
+from app.database import Base, engine, SessionLocal
+from fastapi.middleware.cors import CORSMiddleware
 
-
-# Initialize DB
-models.Base.metadata.create_all(bind=database.engine)
+# ---------------------------
+# DB Initialization
+# ---------------------------
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Blockflow Demo Exchange")
 
