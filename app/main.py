@@ -13,39 +13,16 @@ from fastapi.middleware.cors import CORSMiddleware
 # ---------------------------
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Blockflow Demo Exchange")
+app = FastAPI(title="Blockflow Prototype Exchange")
 
 # Enable CORS (for frontend → backend calls)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later replace "*" with your Vercel frontend URL for security
+    allow_origins=["*"],  # later replace "*" with your Vercel frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ---------------------------
-# Pydantic Schemas
-# ---------------------------
-
-class TradeRequest(BaseModel):
-    username: str
-    side: str   # "buy" or "sell"
-    pair: str = "BTC/USDT"
-    amount: float
-    price: float
-
-
-class P2POrderRequest(BaseModel):
-    username: str
-    type: str        # "Buy" or "Sell"
-    merchant: str
-    price: float
-    available: float
-    limit_min: float
-    limit_max: float
-    payment_method: str
-
 
 # ---------------------------
 # Dependencies
@@ -60,91 +37,68 @@ def get_db():
 
 
 # ---------------------------
-# Trading Endpoints
+# Schemas
 # ---------------------------
 
-@app.post("/trade")
-def place_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.username == trade.username).first()
-    if not user:
-        user = models.User(username=trade.username)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+class TradeRequest(BaseModel):
+    username: str
+    side: str   # "buy" or "sell"
+    pair: str = "BTC/USDT"
+    amount: float
+    price: float
 
-    cost = trade.amount * trade.price
+class P2POrderRequest(BaseModel):
+    username: str
+    type: str        # "Buy" or "Sell"
+    merchant: str
+    price: float
+    available: float
+    limit_min: float
+    limit_max: float
+    payment_method: str
 
-    if trade.side == "buy":
-        if user.balance < cost:
-            return {"error": "Insufficient balance"}
-        user.balance -= cost
-    elif trade.side == "sell":
-        user.balance += cost
 
-    new_trade = models.Trade(
-        user_id=user.id,
-        side=trade.side,
-        pair=trade.pair,
-        amount=trade.amount,
-        price=trade.price,
-    )
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
+# ---------------------------
+# Root Health Check
+# ---------------------------
 
+@app.get("/")
+def root():
     return {
-        "message": "Trade executed",
-        "balance": user.balance,
-        "trade": {
-            "id": new_trade.id,
-            "side": new_trade.side,
-            "amount": new_trade.amount,
-            "price": new_trade.price,
-            "pair": new_trade.pair,
-        },
+        "status": "ok",
+        "service": "Blockflow API",
+        "message": "Backend is running successfully 🚀"
     }
 
 
-@app.get("/portfolio/{username}")
-def get_portfolio(username: str, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if not user:
-        return {"error": "User not found"}
-    return {"username": user.username, "balance": user.balance}
+# =====================================================
+# SPOT & MARGIN TRADING
+# =====================================================
+
+@app.post("/spot/trade")
+def spot_trade(trade: TradeRequest, db: Session = Depends(get_db)):
+    return {"message": "Spot trade executed (stub)", "trade": trade.dict()}
+
+@app.get("/spot/orders")
+def spot_orders(username: str):
+    return {"username": username, "orders": []}
+
+@app.post("/margin/trade")
+def margin_trade(trade: TradeRequest):
+    return {"message": "Margin trade executed (stub)", "trade": trade.dict()}
+
+@app.get("/margin/orders")
+def margin_orders(username: str):
+    return {"username": username, "orders": []}
 
 
-@app.get("/orders/{username}")
-def get_orders(username: str, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if not user:
-        return {"error": "User not found"}
-    trades = db.query(models.Trade).filter(models.Trade.user_id == user.id).all()
-    return [
-        {"side": t.side, "amount": t.amount, "price": t.price, "pair": t.pair}
-        for t in trades
-    ]
-
-
-@app.post("/reset/{username}")
-def reset_balance(username: str, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if not user:
-        user = models.User(username=username, balance=1000000.0)
-        db.add(user)
-    else:
-        user.balance = 1000000.0
-    db.commit()
-    return {"message": "Balance reset", "balance": user.balance}
-
-
-# ---------------------------
-# P2P Endpoints
-# ---------------------------
+# =====================================================
+# P2P TRADING (real logic)
+# =====================================================
 
 @app.get("/p2p/orders")
 def list_p2p_orders(db: Session = Depends(get_db)):
     return db.query(models.P2POrder).all()
-
 
 @app.post("/p2p/orders")
 def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
@@ -152,7 +106,6 @@ def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Lock balance for Buy orders
     cost = order.available * order.price
     if order.type.lower() == "buy":
         if user.balance < cost:
@@ -175,7 +128,6 @@ def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
     db.refresh(new_order)
     return new_order
 
-
 @app.delete("/p2p/orders/{order_id}")
 def delete_p2p_order(order_id: str, db: Session = Depends(get_db)):
     order = db.query(models.P2POrder).filter(models.P2POrder.id == order_id).first()
@@ -184,4 +136,119 @@ def delete_p2p_order(order_id: str, db: Session = Depends(get_db)):
     db.delete(order)
     db.commit()
     return {"status": "deleted"}
+
+
+# =====================================================
+# FUTURES + OPTIONS
+# =====================================================
+
+@app.post("/futures/usdm/trade")
+def futures_usdm_trade(trade: TradeRequest):
+    return {"message": "USDM Futures trade executed (stub)", "trade": trade.dict()}
+
+@app.get("/futures/usdm/orders")
+def futures_usdm_orders(username: str):
+    return {"username": username, "orders": []}
+
+@app.post("/futures/coinm/trade")
+def futures_coinm_trade(trade: TradeRequest):
+    return {"message": "COIN-M Futures trade executed (stub)", "trade": trade.dict()}
+
+@app.get("/futures/coinm/orders")
+def futures_coinm_orders(username: str):
+    return {"username": username, "orders": []}
+
+@app.post("/options/trade")
+def options_trade(trade: TradeRequest):
+    return {"message": "Options trade executed (stub)", "trade": trade.dict()}
+
+@app.get("/options/orders")
+def options_orders(username: str):
+    return {"username": username, "orders": []}
+
+
+# =====================================================
+# EARN
+# =====================================================
+
+@app.post("/earn/stake")
+def earn_stake(username: str, amount: float):
+    return {"message": f"{amount} staked for {username} (stub)"}
+
+@app.get("/earn/stakes")
+def earn_stakes(username: str):
+    return {"username": username, "stakes": []}
+
+@app.post("/earn/save")
+def earn_save(username: str, amount: float):
+    return {"message": f"{amount} saved for {username} (stub)"}
+
+@app.get("/earn/savings")
+def earn_savings(username: str):
+    return {"username": username, "savings": []}
+
+@app.post("/earn/launchpool/join")
+def earn_launchpool(username: str, project: str):
+    return {"message": f"{username} joined Launchpool for {project} (stub)"}
+
+@app.get("/earn/launchpool")
+def earn_launchpool_info():
+    return {"projects": [{"name": "ProjectX", "apr": "15%"}]}
+
+
+# =====================================================
+# BUY CRYPTO & MARKETS
+# =====================================================
+
+@app.post("/buycrypto")
+def buy_crypto(username: str, amount: float, currency: str):
+    return {"message": f"{username} bought {amount} {currency} (stub)"}
+
+@app.get("/markets")
+def get_markets():
+    return {"markets": [
+        {"pair": "BTC/USDT", "price": 50000},
+        {"pair": "ETH/USDT", "price": 3500},
+    ]}
+
+
+# =====================================================
+# ACADEMY + RESEARCH
+# =====================================================
+
+@app.get("/academy/articles")
+def academy_articles():
+    return {"articles": [
+        {"title": "What is Blockchain?", "id": 1},
+        {"title": "Intro to Crypto Trading", "id": 2},
+    ]}
+
+@app.get("/research/reports")
+def research_reports():
+    return {"reports": [
+        {"title": "Q1 Market Outlook", "id": "R1"},
+        {"title": "BTC Adoption Curve", "id": "R2"},
+    ]}
+
+
+# =====================================================
+# STATS
+# =====================================================
+
+@app.get("/stats/transactions")
+def stats_transactions():
+    return {"total_volume": "10B USD", "transactions": 123456}
+
+@app.get("/stats/demo")
+def stats_demo():
+    return {"demo_trades_processed": 98765}
+
+@app.get("/stats/markets")
+def stats_markets():
+    return {"market_listings": 120}
+
+@app.get("/stats/pairs")
+def stats_pairs():
+    return {"trading_pairs": 340}
+
 
