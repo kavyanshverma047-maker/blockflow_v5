@@ -1,8 +1,5 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey
 from sqlalchemy.orm import relationship
-from datetime import datetime
-from app.database import Base
-from sqlalchemy import Column, Integer, String
 from .database import Base
 
 class User(Base):
@@ -11,25 +8,24 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
     email = Column(String, unique=True, index=True, nullable=True)
+    balance = Column(Float, default=100000.0)  # demo balance for prototype
 
-class User(Base):
-    __tablename__ = "users"
+    # Relationship: one user → many P2P orders
+    orders = relationship("P2POrder", back_populates="user")
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    balance = Column(Float, default=1000000.0)  # demo balance
 
-    trades = relationship("Trade", back_populates="user")
-
-class Trade(Base):
-    __tablename__ = "trades"
+class P2POrder(Base):
+    __tablename__ = "p2p_orders"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    side = Column(String)   # "buy" or "sell"
-    pair = Column(String, default="BTC/USDT")
-    amount = Column(Float)
-    price = Column(Float)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    type = Column(String, nullable=False)
+    merchant = Column(String, nullable=False)
+    price = Column(Float, nullable=False)
+    available = Column(Float, nullable=False)
+    limit_min = Column(Float, nullable=False)
+    limit_max = Column(Float, nullable=False)
+    payment_method = Column(String, nullable=False)
 
-    user = relationship("User", back_populates="trades")
+    # Foreign key to User
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user = relationship("User", back_populates="orders")
