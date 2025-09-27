@@ -1,8 +1,9 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from .database import Base
-from app import wall
+from app.database import Base, engine, SessionLocal
+from app import models
+
 
 # Initialize DB
 models.Base.metadata.create_all(bind=database.engine)
