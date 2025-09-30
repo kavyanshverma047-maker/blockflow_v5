@@ -111,6 +111,7 @@ def list_p2p_orders(db: Session = Depends(get_db)):
 
 # Helper function to run DB creation in a separate thread (synchronous)
 def sync_create_p2p_order(db: Session, order: P2POrderRequest) -> models.P2POrder:
+    # We allow the order to include 'username' for association, but the model only needs 'user_id'
     user = db.query(models.User).filter(models.User.username == order.username).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found. Use 'demo_user'.")
@@ -119,11 +120,10 @@ def sync_create_p2p_order(db: Session, order: P2POrderRequest) -> models.P2POrde
     user_id = user.id
 
     # Cost check (simplified prototype logic)
-    # In a real system, balance would be reserved here.
     
     new_order = models.P2POrder(
         user_id=user_id,
-        username=order.username,
+        # Remove username mapping here since P2POrder model only expects user_id
         type=order.type,
         merchant=order.merchant,
         price=order.price,
@@ -148,6 +148,10 @@ async def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)
         new_order = await asyncio.to_thread(sync_create_p2p_order, db, order)
     
         # 2. Broadcast the new order details to all clients
+        # We need to fetch the associated username for the broadcast payload
+        user = db.query(models.User).filter(models.User.id == new_order.user_id).first()
+        username = user.username if user else "Unknown"
+
         # Use asyncio.create_task to non-blockingly broadcast the event
         asyncio.create_task(manager.broadcast({
             "type": "order_update",
@@ -161,7 +165,7 @@ async def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)
                 "merchant": new_order.merchant,
                 "payment_method": new_order.payment_method,
                 "user_id": new_order.user_id,
-                "username": new_order.username,
+                "username": username, # Include username in broadcast for frontend
             }
         }))
         
@@ -328,30 +332,52 @@ def sync_update_p2p_orders(db: Session, btc_inr_price: float):
 
 
 def sync_seed_demo_data(db: Session):
-    """Checks for and creates a demo user and initial P2P orders."""
-    # Check if demo_user exists
-    demo_user = db.query(models.User).filter(models.User.username == "demo_user").first()
-
+    """Seed demo user and a few demo orders for P2P page."""
+    demo_user = db.query(models.User).filter_by(username="demo_user").first()
     if not demo_user:
-        # Large balance for demo
-        demo_user = models.User(username="demo_user", email="demo@blockflow.com", balance=10000000.0) 
+        demo_user = models.User(
+            username="demo_user",
+            email="demo@blockflow.com",
+            balance=100000.0 # Reduced for a more standard starting balance
+        )
         db.add(demo_user)
         db.commit()
         db.refresh(demo_user)
 
-    # Seed some Buy & Sell orders if none exist
-    existing_count = db.query(models.P2POrder).count()
-    if existing_count == 0:
-        # Prices will be auto-adjusted by the poller immediately after startup
+    # Only seed orders if none exist
+    existing_orders = db.query(models.P2POrder).count()
+    if existing_orders == 0:
         demo_orders = [
-            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="Blockflow Merchant", type="Buy",
-                     price=49500, available=0.05, limit_min=500, limit_max=2000, payment_method="UPI"),
-            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="Blockflow Merchant", type="Sell",
-                     price=50500, available=0.1, limit_min=100, limit_max=1000, payment_method="Bank Transfer"),
-            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="CryptoBuddy", type="Buy",
-                     price=49600, available=0.2, limit_min=1000, limit_max=5000, payment_method="IMPS"),
-            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="P2PKing", type="Sell",
-                     price=50400, available=0.5, limit_min=500, limit_max=2500, payment_method="NEFT")
+            models.P2POrder(
+                user_id=demo_user.id,
+                merchant="Blockflow Merchant",
+                type="Buy",
+                price=49500, # Initial price, will be updated by poller
+                available=0.05,
+                limit_min=500,
+                limit_max=2000,
+                payment_method="UPI"
+            ),
+            models.P2POrder(
+                user_id=demo_user.id,
+                merchant="Blockflow Merchant",
+                type="Sell",
+                price=50500, # Initial price, will be updated by poller
+                available=0.08,
+                limit_min=1000,
+                limit_max=5000,
+                payment_method="Bank Transfer"
+            ),
+             models.P2POrder(
+                user_id=demo_user.id,
+                merchant="P2P Buddy",
+                type="Buy",
+                price=49600, # Initial price, will be updated by poller
+                available=0.2,
+                limit_min=100,
+                limit_max=1000,
+                payment_method="IMPS"
+            ),
         ]
         db.add_all(demo_orders)
         db.commit()
@@ -458,4 +484,3 @@ async def start_background_tasks():
     # 2. Start the price poller (async task)
     asyncio.create_task(coingecko_price_poller())
     print("✅ Realtime CoinGecko poller started")
-
