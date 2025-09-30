@@ -361,7 +361,7 @@ async def coingecko_price_poller():
         await asyncio.sleep(TICK_INTERVAL) # The core loop runs every 5 seconds
 
 # ---- WebSocket endpoint ----
-@app.websocket("/ws/realtime")
+@app.websocket("/ws") # <-- CHANGED from "/ws/realtime" to "/ws"
 async def websocket_endpoint(websocket: WebSocket):
     """Handles new WebSocket connections."""
     # Use manager to connect the client
