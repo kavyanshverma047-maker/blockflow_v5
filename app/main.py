@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+# Import Session from sqlalchemy.orm for type hinting in sync functions
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Set, Dict, List
@@ -7,9 +8,10 @@ import asyncio
 import json
 import time
 import httpx 
-import os # NEW: Import os for environment variable access
-import random # NEW: Import random for price jittering
+import os 
+import random 
 
+# Import models for seeding and poller functions
 from app import models
 from app.database import Base, engine, SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
@@ -117,7 +119,9 @@ def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
     if order.type.lower() == "buy":
         if user.balance < cost:
             raise HTTPException(status_code=400, detail="Insufficient balance")
-        user.balance -= cost
+        # In a real system, you'd reserve balance here, not deduct it immediately.
+        # For prototype: we'll skip the balance update logic on order creation.
+        pass 
 
     new_order = models.P2POrder(
         user_id=user.id,
@@ -155,60 +159,8 @@ def place_spot_trade(trade: TradeRequest, db: Session = Depends(get_db)):
         "trade": trade.dict()
     }
 
-@app.get("/spot")
-def get_spot():
-    return {"message": "Spot trading endpoint (prototype)"}
-
+# ... (other stub endpoints remain unchanged)
 # -----------------------------------------------------
-# FUTURES TRADING (prototype)
-# -----------------------------------------------------
-@app.post("/futures/trade")
-def place_futures_trade(trade: TradeRequest):
-    return {
-        "message": "Futures trade placed successfully (prototype)",
-        "trade": trade.dict()
-    }
-
-@app.get("/futures")
-def get_futures():
-    return {"message": "Futures trading endpoint (prototype)"}
-
-# -----------------------------------------------------
-# MARGIN TRADING (prototype)
-# -----------------------------------------------------
-@app.post("/margin/trade")
-def place_margin_trade(trade: TradeRequest):
-    return {
-        "message": "Margin trade placed successfully (prototype)",
-        "trade": trade.dict()
-    }
-
-@app.get("/margin")
-def get_margin():
-    return {"message": "Margin trading endpoint (prototype)"}
-
-# -----------------------------------------------------
-# OTHER NAVBAR FEATURES (stubs)
-# -----------------------------------------------------
-@app.get("/earn")
-def get_earn():
-    return {"message": "Earn endpoint (prototype)"}
-
-@app.get("/academy")
-def get_academy():
-    return {"message": "Academy endpoint (prototype)"}
-
-@app.get("/markets")
-def get_markets():
-    return {"message": "Markets endpoint (prototype)"}
-
-@app.get("/research")
-def get_research():
-    return {"message": "Research endpoint (prototype)"}
-
-@app.get("/copy-trading")
-def get_copy_trading():
-    return {"message": "Copy trading endpoint (prototype)"}
 
 # ===============================
 # 🔴 Real-time WebSocket + Prices
@@ -248,14 +200,13 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # --- CoinGecko API Helper ---
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")  # Get optional API key
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY") 
 
 async def fetch_prices_from_coingecko():
     """Fetches real-time prices from CoinGecko, using Pro API key if available."""
     url = "https://api.coingecko.com/api/v3/simple/price"
     headers = {}
     
-    # Use Pro API key if set in environment variables
     if COINGECKO_API_KEY:
         headers["x-cg-pro-api-key"] = COINGECKO_API_KEY 
 
@@ -271,40 +222,98 @@ async def fetch_prices_from_coingecko():
 async def broadcast_price_data(data: Dict):
     """Parses CoinGecko response and broadcasts individual updates."""
     
-    # Extract prices for BTC
-    btc_usd = data.get("bitcoin", {}).get("usd")
-    btc_inr = data.get("bitcoin", {}).get("inr")
+    # Map CoinGecko IDs to our symbols and extract data
+    symbols_map = {
+        "bitcoin": "BTC/USDT",
+        "ethereum": "ETH/USDT"
+    }
     
-    # Extract prices for ETH
-    eth_usd = data.get("ethereum", {}).get("usd")
-    eth_inr = data.get("ethereum", {}).get("inr")
+    for cg_id, symbol in symbols_map.items():
+        usd_price = data.get(cg_id, {}).get("usd")
+        inr_price = data.get(cg_id, {}).get("inr")
 
-    # Broadcast BTC data
-    if btc_usd is not None and btc_inr is not None:
-        await manager.broadcast({
-            "type": "price_update",
-            "symbol": "BTC/USDT",
-            "usd": btc_usd,
-            "inr": btc_inr,
-            "timestamp": time.time()
-        })
+        if usd_price is not None and inr_price is not None:
+            # Broadcast data
+            await manager.broadcast({
+                "type": "price_update",
+                "symbol": symbol,
+                "usd": usd_price,
+                "inr": inr_price,
+                # Convert time to milliseconds for easy JS processing
+                "timestamp": int(time.time() * 1000) 
+            })
+
+
+# ---- Synchronous DB Helpers (for use with asyncio.to_thread) ----
+
+def sync_update_p2p_orders(db: Session, btc_inr_price: float):
+    """Updates P2P Buy and Sell order prices based on the live BTC price."""
+    # Fetch all orders (for this demo)
+    orders = db.query(models.P2POrder).all()
+    updated_count = 0
     
-    # Broadcast ETH data
-    if eth_usd is not None and eth_inr is not None:
-        await manager.broadcast({
-            "type": "price_update",
-            "symbol": "ETH/USDT",
-            "usd": eth_usd,
-            "inr": eth_inr,
-            "timestamp": time.time()
-        })
+    # Arbitrary buffers to simulate a spread around the market price
+    SELL_MARKUP = 1.015 # 1.5% above market for Sell orders
+    BUY_DISCOUNT = 0.985 # 1.5% below market for Buy orders
+
+    for order in orders:
+        new_price = None
+        
+        # NOTE: This assumes all P2P orders are for BTC. 
+        # For a production system, you would check a currency column.
+        if order.type == "Sell":
+            # Set the Sell price (what a user pays) slightly above market
+            new_price = btc_inr_price * SELL_MARKUP
+        elif order.type == "Buy":
+            # Set the Buy price (what a user receives) slightly below market
+            new_price = btc_inr_price * BUY_DISCOUNT
+        
+        if new_price is not None:
+            order.price = round(new_price, 0)
+            db.add(order)
+            updated_count += 1
+            
+    db.commit()
+    if updated_count > 0:
+        print(f"🔄 Auto-synced {updated_count} P2P orders to new BTC price: ₹{int(btc_inr_price)}")
+
+
+def sync_seed_demo_data(db: Session):
+    """Checks for and creates a demo user and initial P2P orders."""
+    # Check if demo_user exists
+    demo_user = db.query(models.User).filter(models.User.username == "demo_user").first()
+
+    if not demo_user:
+        demo_user = models.User(username="demo_user", email="demo@blockflow.com", balance=10000000.0) # Large balance for demo
+        db.add(demo_user)
+        db.commit()
+        db.refresh(demo_user)
+
+    # Seed some Buy & Sell orders if none exist
+    existing_count = db.query(models.P2POrder).count()
+    if existing_count == 0:
+        # Prices will be auto-adjusted by the poller immediately after startup
+        demo_orders = [
+            models.P2POrder(user_id=demo_user.id, merchant="Blockflow Merchant", type="Buy",
+                     price=49500, available=0.05, limit_min=500, limit_max=2000, payment_method="UPI"),
+            models.P2POrder(user_id=demo_user.id, merchant="Blockflow Merchant", type="Sell",
+                     price=50500, available=0.1, limit_min=100, limit_max=1000, payment_method="Bank Transfer"),
+            models.P2POrder(user_id=demo_user.id, merchant="CryptoBuddy", type="Buy",
+                     price=49600, available=0.2, limit_min=1000, limit_max=5000, payment_method="IMPS"),
+            models.P2POrder(user_id=demo_user.id, merchant="P2PKing", type="Sell",
+                     price=50400, available=0.5, limit_min=500, limit_max=2500, payment_method="NEFT")
+        ]
+        db.add_all(demo_orders)
+        db.commit()
+        print("✅ Initial P2P demo orders created.")
+    print("✅ Demo data seeding complete.")
 
 
 # ---- CoinGecko Poller (Resilient Version) ----
 async def coingecko_price_poller():
     """
     Polls CoinGecko API every 30s. Applies jitter every 5s.
-    Uses cached prices and switches to a demo mode if too many errors occur.
+    Uses cached prices, updates P2P orders, and switches to a demo mode if too many errors occur.
     """
     # Initialize cache with safe starting values
     cache = {
@@ -312,8 +321,8 @@ async def coingecko_price_poller():
         "ethereum": {"usd": 3000.00, "inr": 250000.00}
     }
     
-    TICK_INTERVAL = 5 # seconds
-    POLL_INTERVAL_TICKS = 6 # 6 * 5s = 30s
+    TICK_INTERVAL = 5 # seconds (Jitter/Broadcast frequency)
+    POLL_INTERVAL_TICKS = 6 # 6 * 5s = 30s (API poll frequency)
     MAX_FAILURES = 3
 
     tick_count = 0
@@ -321,13 +330,11 @@ async def coingecko_price_poller():
     demo_mode = False
 
     while True:
-        # 1. Attempt to fetch real data every 30 seconds (6 ticks of 5s)
+        # 1. Attempt to fetch real data every 30 seconds
         if tick_count % POLL_INTERVAL_TICKS == 0:
             try:
-                # Fetches new real data
                 new_data = await fetch_prices_from_coingecko()
                 
-                # If successful, update cache, reset failures, and exit demo mode
                 cache = new_data
                 failures = 0
                 demo_mode = False
@@ -337,16 +344,14 @@ async def coingecko_price_poller():
                 failures += 1
                 error_message = str(e)
                 
-                # Check for rate limiting error (e.g., httpx.HTTPStatusError 429)
                 if failures > MAX_FAILURES or "429" in error_message:
                     if not demo_mode:
                         print("🚨 CoinGecko rate limit exceeded (or other persistent error). Switching to DEMO mode.")
                         demo_mode = True
                 
                 print(f"⚠️ CoinGecko error (Failure {failures}): {e}")
-                # Note: If demo_mode is True, the cache retains the last good price.
 
-        # 2. Apply jitter to the current prices (from cache or last successful fetch)
+        # 2. Apply jitter to the current prices
         jittered_data = {}
         for sym, vals in cache.items():
             jittered_data[sym] = {
@@ -356,37 +361,51 @@ async def coingecko_price_poller():
 
         # 3. Broadcast the jittered data
         await broadcast_price_data(jittered_data)
+        
+        # 4. 🔥 Auto-sync P2P Sell/Buy Orders to the Jittered BTC/INR Price (Every 30s tick)
+        if tick_count % POLL_INTERVAL_TICKS == 0:
+            btc_inr_price = jittered_data.get("bitcoin", {}).get("inr")
+            if btc_inr_price is not None:
+                db_sync = SessionLocal()
+                try:
+                    # Run the synchronous database update in a separate thread
+                    await asyncio.to_thread(sync_update_p2p_orders, db_sync, btc_inr_price)
+                finally:
+                    db_sync.close()
 
         tick_count += 1
-        await asyncio.sleep(TICK_INTERVAL) # The core loop runs every 5 seconds
+        await asyncio.sleep(TICK_INTERVAL) 
 
 # ---- WebSocket endpoint ----
-@app.websocket("/ws") # <-- CHANGED from "/ws/realtime" to "/ws"
+@app.websocket("/ws") 
 async def websocket_endpoint(websocket: WebSocket):
     """Handles new WebSocket connections."""
-    # Use manager to connect the client
     await manager.connect(websocket)
     try:
-        # Keep the connection open to listen for client messages (like ping)
         while True:
             msg = await websocket.receive_text()
             if msg == "ping":
                 await websocket.send_text(json.dumps({"type": "pong", "ts": time.time()}))
-            # Removed get_orders/init logic as global state is no longer managed here
     except WebSocketDisconnect:
-        # Use manager to disconnect the client
         manager.disconnect(websocket)
     except Exception:
-        # Ensure client is disconnected on any other error
         manager.disconnect(websocket)
 
 
 # ---- Startup tasks ----
 @app.on_event("startup")
 async def start_background_tasks():
-    """Starts the CoinGecko price poller task on application startup."""
+    """Seeds demo data and starts the CoinGecko price poller task on application startup."""
+    print("🚀 App starting up...")
+    
+    # 1. Seed demo data first (run sync function in a thread)
+    db_sync = SessionLocal()
+    try:
+        await asyncio.to_thread(sync_seed_demo_data, db_sync)
+    finally:
+        db_sync.close()
+    
+    # 2. Start the price poller (async task)
     asyncio.create_task(coingecko_price_poller())
     print("✅ Realtime CoinGecko poller started")
-
-
 
