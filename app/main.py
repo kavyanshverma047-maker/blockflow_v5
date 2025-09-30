@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
-# Import Session from sqlalchemy.orm for type hinting in sync functions
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Set, Dict, List
@@ -55,7 +54,7 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
 
 class P2POrderRequest(BaseModel):
-    username: str
+    username: str # Added for demo user association
     type: str          # "Buy" or "Sell"
     merchant: str
     price: float
@@ -106,25 +105,25 @@ def list_users(db: Session = Depends(get_db)):
 # -----------------------------------------------------
 @app.get("/p2p/orders")
 def list_p2p_orders(db: Session = Depends(get_db)):
-    return db.query(models.P2POrder).all()
+    # Order by price to show a better board
+    return db.query(models.P2POrder).order_by(models.P2POrder.type.desc(), models.P2POrder.price.desc()).all()
 
-@app.post("/p2p/orders")
-def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
+
+# Helper function to run DB creation in a separate thread (synchronous)
+def sync_create_p2p_order(db: Session, order: P2POrderRequest) -> models.P2POrder:
     user = db.query(models.User).filter(models.User.username == order.username).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found. Use 'demo_user'.")
 
-    # Cost check only for Buy orders
-    cost = order.available * order.price
-    if order.type.lower() == "buy":
-        if user.balance < cost:
-            raise HTTPException(status_code=400, detail="Insufficient balance")
-        # In a real system, you'd reserve balance here, not deduct it immediately.
-        # For prototype: we'll skip the balance update logic on order creation.
-        pass 
+    # Fetch user's ID
+    user_id = user.id
 
+    # Cost check (simplified prototype logic)
+    # In a real system, balance would be reserved here.
+    
     new_order = models.P2POrder(
-        user_id=user.id,
+        user_id=user_id,
+        username=order.username,
         type=order.type,
         merchant=order.merchant,
         price=order.price,
@@ -138,6 +137,43 @@ def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
     db.refresh(new_order)
     return new_order
 
+
+@app.post("/p2p/orders")
+async def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
+    """
+    Creates a new P2P order and broadcasts an 'order_update' event to all clients.
+    """
+    try:
+        # 1. Run synchronous DB operation in a separate thread
+        new_order = await asyncio.to_thread(sync_create_p2p_order, db, order)
+    
+        # 2. Broadcast the new order details to all clients
+        # Use asyncio.create_task to non-blockingly broadcast the event
+        asyncio.create_task(manager.broadcast({
+            "type": "order_update",
+            "order": {
+                "id": new_order.id,
+                "type": new_order.type,
+                "price": new_order.price,
+                "available": new_order.available,
+                "limit_min": new_order.limit_min,
+                "limit_max": new_order.limit_max,
+                "merchant": new_order.merchant,
+                "payment_method": new_order.payment_method,
+                "user_id": new_order.user_id,
+                "username": new_order.username,
+            }
+        }))
+        
+        return new_order
+    except HTTPException:
+        # Re-raise FastAPIs exceptions
+        raise
+    except Exception as e:
+        print(f"Error creating order: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
 @app.delete("/p2p/orders/{order_id}")
 def delete_p2p_order(order_id: int, db: Session = Depends(get_db)):
     order = db.query(models.P2POrder).filter(models.P2POrder.id == order_id).first()
@@ -146,6 +182,19 @@ def delete_p2p_order(order_id: int, db: Session = Depends(get_db)):
 
     db.delete(order)
     db.commit()
+    
+    # Broadcast a signal to remove the order from the board in real-time
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+    asyncio.run_coroutine_threadsafe(manager.broadcast({
+        "type": "order_delete",
+        "order_id": order_id
+    }), loop)
+
     return {"message": "Order deleted successfully"}
 
 # -----------------------------------------------------
@@ -189,7 +238,8 @@ class ConnectionManager:
         # Iterate over a copy to allow modification during iteration
         for ws in list(self.active_connections):
             try:
-                await ws.send_text(text)
+                # Use send_text for efficiency, send_json is for dict inputs
+                await ws.send_text(text) 
             except Exception:
                 # Mark disconnected client for removal
                 to_remove.add(ws)
@@ -260,7 +310,6 @@ def sync_update_p2p_orders(db: Session, btc_inr_price: float):
         new_price = None
         
         # NOTE: This assumes all P2P orders are for BTC. 
-        # For a production system, you would check a currency column.
         if order.type == "Sell":
             # Set the Sell price (what a user pays) slightly above market
             new_price = btc_inr_price * SELL_MARKUP
@@ -284,7 +333,8 @@ def sync_seed_demo_data(db: Session):
     demo_user = db.query(models.User).filter(models.User.username == "demo_user").first()
 
     if not demo_user:
-        demo_user = models.User(username="demo_user", email="demo@blockflow.com", balance=10000000.0) # Large balance for demo
+        # Large balance for demo
+        demo_user = models.User(username="demo_user", email="demo@blockflow.com", balance=10000000.0) 
         db.add(demo_user)
         db.commit()
         db.refresh(demo_user)
@@ -294,13 +344,13 @@ def sync_seed_demo_data(db: Session):
     if existing_count == 0:
         # Prices will be auto-adjusted by the poller immediately after startup
         demo_orders = [
-            models.P2POrder(user_id=demo_user.id, merchant="Blockflow Merchant", type="Buy",
+            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="Blockflow Merchant", type="Buy",
                      price=49500, available=0.05, limit_min=500, limit_max=2000, payment_method="UPI"),
-            models.P2POrder(user_id=demo_user.id, merchant="Blockflow Merchant", type="Sell",
+            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="Blockflow Merchant", type="Sell",
                      price=50500, available=0.1, limit_min=100, limit_max=1000, payment_method="Bank Transfer"),
-            models.P2POrder(user_id=demo_user.id, merchant="CryptoBuddy", type="Buy",
+            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="CryptoBuddy", type="Buy",
                      price=49600, available=0.2, limit_min=1000, limit_max=5000, payment_method="IMPS"),
-            models.P2POrder(user_id=demo_user.id, merchant="P2PKing", type="Sell",
+            models.P2POrder(user_id=demo_user.id, username="demo_user", merchant="P2PKing", type="Sell",
                      price=50400, available=0.5, limit_min=500, limit_max=2500, payment_method="NEFT")
         ]
         db.add_all(demo_orders)
@@ -311,10 +361,7 @@ def sync_seed_demo_data(db: Session):
 
 # ---- CoinGecko Poller (Resilient Version) ----
 async def coingecko_price_poller():
-    """
-    Polls CoinGecko API every 30s. Applies jitter every 5s.
-    Uses cached prices, updates P2P orders, and switches to a demo mode if too many errors occur.
-    """
+    """Polls CoinGecko API for price data and updates P2P orders."""
     # Initialize cache with safe starting values
     cache = {
         "bitcoin": {"usd": 50000.00, "inr": 4200000.00},
@@ -362,7 +409,7 @@ async def coingecko_price_poller():
         # 3. Broadcast the jittered data
         await broadcast_price_data(jittered_data)
         
-        # 4. 🔥 Auto-sync P2P Sell/Buy Orders to the Jittered BTC/INR Price (Every 30s tick)
+        # 4. Auto-sync P2P Sell/Buy Orders to the Jittered BTC/INR Price (Every 30s tick)
         if tick_count % POLL_INTERVAL_TICKS == 0:
             btc_inr_price = jittered_data.get("bitcoin", {}).get("inr")
             if btc_inr_price is not None:
@@ -370,6 +417,8 @@ async def coingecko_price_poller():
                 try:
                     # Run the synchronous database update in a separate thread
                     await asyncio.to_thread(sync_update_p2p_orders, db_sync, btc_inr_price)
+                    # Tell frontend to refresh the board after prices change
+                    await manager.broadcast({"type": "orders_refresh"}) 
                 finally:
                     db_sync.close()
 
@@ -383,6 +432,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
+            # Optionally listen for client messages (e.g., subscription requests)
             msg = await websocket.receive_text()
             if msg == "ping":
                 await websocket.send_text(json.dumps({"type": "pong", "ts": time.time()}))
