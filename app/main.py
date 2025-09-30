@@ -1,44 +1,45 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional, Set, Dict, List
-import uuid
+import os
 import asyncio
 import json
 import time
 import httpx 
-import os 
 import random 
+from datetime import datetime, timedelta
+from typing import Optional, Set, Dict, List, Any
 
-# Import models for seeding and poller functions
-from app import models
-from app.database import Base, engine, SessionLocal
+# JWT and Auth specific imports
+import jwt
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+# FastAPI and SQLAlchemy imports
+from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+# Import models (assuming they are correctly set up in app.models and app.database)
+# The provided snippet uses 'from app.models import Base, User, P2POrder, Trade'
+# We will rely on 'from app import models' and the initial setup.
+from app import models
+from app.database import Base, engine, SessionLocal # Assuming these still exist
 
 # -----------------------------------------------------
-# Create FastAPI app
+# ---------- CONFIG & DB SETUP (Updated) ----------
 # -----------------------------------------------------
-app = FastAPI(title="Blockflow Prototype Exchange")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-demo-key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-# -----------------------------------------------------
+# Re-create engine/session based on the new snippet's standard structure
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 # Initialize database tables
-# -----------------------------------------------------
 models.Base.metadata.create_all(bind=engine)
 
-# -----------------------------------------------------
-# Enable CORS (for frontend integration)
-# -----------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ in prod, restrict to frontend domain
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# -----------------------------------------------------
-# DB Session Dependency
-# -----------------------------------------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -47,251 +48,92 @@ def get_db():
         db.close()
 
 # -----------------------------------------------------
+# Create FastAPI app
+# -----------------------------------------------------
+app = FastAPI(title="Blockflow Prototype Exchange")
+
+# Enable CORS (for frontend integration)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ⚠️ in prod, restrict to frontend domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# -----------------------------------------------------
 # Schemas
 # -----------------------------------------------------
 class UserCreate(BaseModel):
     username: str
-    email: Optional[str] = None
+    email: str | None = None
+    password: str | None = None # Added for JWT registration
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 class P2POrderRequest(BaseModel):
-    username: str # Added for demo user association
+    # Updated to remove 'username' dependency as user is identified by JWT
     type: str          # "Buy" or "Sell"
-    merchant: str
+    merchant: str | None = None
     price: float
     available: float
-    limit_min: float
-    limit_max: float
-    payment_method: str
+    limit_min: float | None = None
+    limit_max: float | None = None
+    payment_method: str | None = None
 
-class TradeRequest(BaseModel):  # for Spot / Futures / Margin prototypes
+class ExchangeTradeRequest(BaseModel):  # For Spot / Futures / Margin prototypes
+    # Retained the old structure for prototype exchange endpoints
     username: str
     side: str        # "buy" or "sell"
     pair: str        # e.g. "BTC/USDT"
     amount: float
     price: float
+    
+class P2PTradeExecutionRequest(BaseModel):
+    order_id: int
+    taker_id: int  # user id of the taker (current_user.id should equal req.taker_id)
+    amount: float
+
 
 # -----------------------------------------------------
-# Root healthcheck
+# ---------- AUTH HELPERS (from new snippet) ----------
 # -----------------------------------------------------
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": "Blockflow API",
-        "message": "Backend is running successfully 🚀"
-    }
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# -----------------------------------------------------
-# USERS
-# -----------------------------------------------------
-@app.post("/users")
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
+def decode_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.PyJWTError:
+        return None
 
-    new_user = models.User(username=user.username, email=user.email)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-@app.get("/users")
-def list_users(db: Session = Depends(get_db)):
-    return db.query(models.User).all()
-
-# -----------------------------------------------------
-# P2P ORDERS
-# -----------------------------------------------------
-@app.get("/p2p/orders")
-def list_p2p_orders(db: Session = Depends(get_db)):
-    # Order by price to show a better board
-    return db.query(models.P2POrder).order_by(models.P2POrder.type.desc(), models.P2POrder.price.desc()).all()
-
-
-# Helper function to run DB creation in a separate thread (synchronous)
-def sync_create_p2p_order(db: Session, order: P2POrderRequest) -> models.P2POrder:
-    # We allow the order to include 'username' for association, but the model only needs 'user_id'
-    user = db.query(models.User).filter(models.User.username == order.username).first()
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
+    """Dependency to retrieve the currently authenticated user."""
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    # Using models.User as per snippet's implied usage
+    user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found. Use 'demo_user'.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
 
-    # Fetch user's ID
-    user_id = user.id
-
-    # Cost check (simplified prototype logic)
-    
-    new_order = models.P2POrder(
-        user_id=user_id,
-        # Remove username mapping here since P2POrder model only expects user_id
-        type=order.type,
-        merchant=order.merchant,
-        price=order.price,
-        available=order.available,
-        limit_min=order.limit_min,
-        limit_max=order.limit_max,
-        payment_method=order.payment_method,
-    )
-    db.add(new_order)
-    db.commit()
-    db.refresh(new_order)
-    return new_order
-
-
-@app.post("/p2p/orders")
-async def create_p2p_order(order: P2POrderRequest, db: Session = Depends(get_db)):
-    """
-    Creates a new P2P order and broadcasts an 'order_update' event to all clients.
-    """
-    try:
-        # 1. Run synchronous DB operation in a separate thread
-        new_order = await asyncio.to_thread(sync_create_p2p_order, db, order)
-    
-        # 2. Broadcast the new order details to all clients
-        # We need to fetch the associated username for the broadcast payload
-        user = db.query(models.User).filter(models.User.id == new_order.user_id).first()
-        username = user.username if user else "Unknown"
-
-        # Use asyncio.create_task to non-blockingly broadcast the event
-        asyncio.create_task(manager.broadcast({
-            "type": "order_update",
-            "order": {
-                "id": new_order.id,
-                "type": new_order.type,
-                "price": new_order.price,
-                "available": new_order.available,
-                "limit_min": new_order.limit_min,
-                "limit_max": new_order.limit_max,
-                "merchant": new_order.merchant,
-                "payment_method": new_order.payment_method,
-                "user_id": new_order.user_id,
-                "username": username, # Include username in broadcast for frontend
-            }
-        }))
-        
-        return new_order
-    except HTTPException:
-        # Re-raise FastAPIs exceptions
-        raise
-    except Exception as e:
-        print(f"Error creating order: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
-
-
-@app.delete("/p2p/orders/{order_id}")
-def delete_p2p_order(order_id: int, db: Session = Depends(get_db)):
-    order = db.query(models.P2POrder).filter(models.P2POrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    db.delete(order)
-    db.commit()
-    
-    # Broadcast a signal to remove the order from the board in real-time
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-    asyncio.run_coroutine_threadsafe(manager.broadcast({
-        "type": "order_delete",
-        "order_id": order_id
-    }), loop)
-
-    return {"message": "Order deleted successfully"}
 
 # -----------------------------------------------------
-# SPOT TRADING ENDPOINTS
+# ---------- WEBSOCKET CONNECTION MANAGER (Existing) ----------
 # -----------------------------------------------------
-@app.post("/spot/trade")
-def place_spot_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    # Assuming models.SpotTrade exists in app/models.py
-    new_trade = models.SpotTrade(**trade.dict())
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
-    return new_trade
-
-@app.get("/spot/orders")
-def list_spot_orders(db: Session = Depends(get_db)):
-    # Assuming models.SpotTrade exists in app/models.py
-    return db.query(models.SpotTrade).all()
-
-# -----------------------------------------------------
-# MARGIN TRADING ENDPOINTS
-# -----------------------------------------------------
-@app.post("/margin/trade")
-def place_margin_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    # Assuming models.MarginTrade exists in app/models.py
-    new_trade = models.MarginTrade(**trade.dict())
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
-    return new_trade
-
-@app.get("/margin/orders")
-def list_margin_orders(db: Session = Depends(get_db)):
-    # Assuming models.MarginTrade exists in app/models.py
-    return db.query(models.MarginTrade).all()
-
-# -----------------------------------------------------
-# FUTURES (USDM) TRADING ENDPOINTS
-# -----------------------------------------------------
-@app.post("/futures/usdm/trade")
-def place_usdm_futures_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    # Assuming models.FuturesUsdmTrade exists in app/models.py
-    new_trade = models.FuturesUsdmTrade(**trade.dict())
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
-    return new_trade
-
-@app.get("/futures/usdm/orders")
-def list_usdm_futures_orders(db: Session = Depends(get_db)):
-    # Assuming models.FuturesUsdmTrade exists in app/models.py
-    return db.query(models.FuturesUsdmTrade).all()
-
-# -----------------------------------------------------
-# FUTURES (COINM) TRADING ENDPOINTS
-# -----------------------------------------------------
-@app.post("/futures/coinm/trade")
-def place_coinm_futures_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    # Assuming models.FuturesCoinmTrade exists in app/models.py
-    new_trade = models.FuturesCoinmTrade(**trade.dict())
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
-    return new_trade
-
-@app.get("/futures/coinm/orders")
-def list_coinm_futures_orders(db: Session = Depends(get_db)):
-    # Assuming models.FuturesCoinmTrade exists in app/models.py
-    return db.query(models.FuturesCoinmTrade).all()
-
-# -----------------------------------------------------
-# OPTIONS TRADING ENDPOINTS
-# -----------------------------------------------------
-@app.post("/options/trade")
-def place_options_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    # Assuming models.OptionsTrade exists in app/models.py
-    new_trade = models.OptionsTrade(**trade.dict())
-    db.add(new_trade)
-    db.commit()
-    db.refresh(new_trade)
-    return new_trade
-
-@app.get("/options/orders")
-def list_options_orders(db: Session = Depends(get_db)):
-    # Assuming models.OptionsTrade exists in app/models.py
-    return db.query(models.OptionsTrade).all()
-
-# -----------------------------------------------------
-# ===============================
-# 🔴 Real-time WebSocket + Prices
-# ===============================
-
-# --- Connection Manager ---
 class ConnectionManager:
     """Manages active WebSocket connections and broadcasts messages."""
     def __init__(self):
@@ -314,7 +156,7 @@ class ConnectionManager:
         # Iterate over a copy to allow modification during iteration
         for ws in list(self.active_connections):
             try:
-                # Use send_text for efficiency, send_json is for dict inputs
+                # Use send_text for efficiency
                 await ws.send_text(text) 
             except Exception:
                 # Mark disconnected client for removal
@@ -324,6 +166,310 @@ class ConnectionManager:
             self.active_connections.discard(ws)
 
 manager = ConnectionManager()
+
+
+# -----------------------------------------------------
+# ---------- ENDPOINTS ----------
+# -----------------------------------------------------
+
+# Root healthcheck
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "Blockflow API",
+        "message": "Backend is running successfully 🚀"
+    }
+
+# --- Auth Endpoints ---
+@app.post("/register", response_model=Dict)
+def register_user(payload: UserCreate, db: Session = Depends(get_db)):
+    """Registers a new user and returns a JWT token."""
+    existing = db.query(models.User).filter(models.User.username == payload.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    
+    # NOTE: Password is NOT saved or checked for this demo, only username is used for token generation
+    user = models.User(username=payload.username, email=payload.email, balance=100000.0)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = create_access_token({"user_id": user.id})
+    return {"id": user.id, "username": user.username, "email": user.email, "access_token": token}
+
+@app.post("/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """Authenticates a user and returns a JWT token."""
+    # For demo we accept any password if username exists.
+    user = db.query(models.User).filter(models.User.username == form_data.username).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    token = create_access_token({"user_id": user.id})
+    return {"access_token": token, "token_type": "bearer"}
+
+# --- Users Endpoint ---
+@app.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    """Lists all users (Public endpoint for demo purposes)."""
+    users = db.query(models.User).all()
+    # Mask password field, include balance
+    return [{"id": u.id, "username": u.username, "email": u.email, "balance": u.balance} for u in users]
+
+
+# -----------------------------------------------------
+# P2P ORDERS (Updated with Auth & WebSocket Broadcasts)
+# -----------------------------------------------------
+def _get_p2p_orders_payload(db: Session) -> List[Dict[str, Any]]:
+    """Helper to fetch and format the current P2P order list."""
+    orders = db.query(models.P2POrder).all()
+    # Fetch usernames for display
+    user_map = {u.id: u.username for u in db.query(models.User).all()}
+    
+    return [
+        {"id": o.id, "user_id": o.user_id, "merchant": o.merchant, "type": o.type, 
+         "price": o.price, "available": o.available, "limit_min": o.limit_min, 
+         "limit_max": o.limit_max, "payment_method": o.payment_method, 
+         "username": user_map.get(o.user_id, "Unknown")}
+        for o in orders
+    ]
+
+
+@app.get("/p2p/orders")
+def list_p2p_orders(db: Session = Depends(get_db)):
+    """Lists all P2P orders."""
+    # Order by price to show a better board
+    return db.query(models.P2POrder).order_by(models.P2POrder.type.desc(), models.P2POrder.price.desc()).all()
+
+
+@app.post("/p2p/orders")
+def create_p2p_order(req: P2POrderRequest, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Creates a new P2P order (protected by JWT)."""
+    # Basic validation
+    if req.price <= 0 or req.available <= 0:
+        raise HTTPException(status_code=422, detail="Price and available amount must be > 0")
+        
+    order = models.P2POrder(
+        user_id=current_user.id,
+        type=req.type,
+        merchant=req.merchant or current_user.username,
+        price=req.price,
+        available=req.available,
+        limit_min=req.limit_min,
+        limit_max=req.limit_max,
+        payment_method=req.payment_method
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+
+    # 1. Broadcast single order update
+    asyncio.create_task(manager.broadcast({"type": "order_update", "action": "created", "order": {
+        "id": order.id,
+        "user_id": order.user_id,
+        "merchant": order.merchant,
+        "type": order.type,
+        "price": order.price,
+        "available": order.available,
+        "limit_min": order.limit_min,
+        "limit_max": order.limit_max,
+        "payment_method": order.payment_method,
+        "username": current_user.username # Include username
+    }}))
+
+    # 2. Broadcast updated order list snapshot
+    asyncio.create_task(manager.broadcast({"type": "order_list", "orders": _get_p2p_orders_payload(db)}))
+
+    return {"id": order.id, "user_id": order.user_id, "price": order.price, "available": order.available}
+
+
+@app.delete("/p2p/orders/{order_id}")
+def delete_p2p_order(order_id: int, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Deletes a P2P order (protected by JWT, only owner can delete)."""
+    order = db.query(models.P2POrder).filter(models.P2POrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this order")
+        
+    db.delete(order)
+    db.commit()
+    
+    # Broadcast signal to remove the order
+    asyncio.create_task(manager.broadcast({"type": "order_update", "action": "deleted", "order_id": order_id}))
+    # Broadcast current order list snapshot
+    asyncio.create_task(manager.broadcast({"type": "order_list", "orders": _get_p2p_orders_payload(db)}))
+
+    return {"message": "Order deleted successfully"}
+
+
+@app.post("/p2p/trade")
+def execute_trade(req: P2PTradeExecutionRequest, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Executes a P2P trade, updating balances and orders.
+    Requires JWT authentication.
+    """
+    if current_user.id != req.taker_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Taker ID must match authenticated user ID")
+
+    order = db.query(models.P2POrder).filter(models.P2POrder.id == req.order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    if order.user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot trade against your own order")
+
+    if req.amount <= 0 or req.amount > order.available:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid trade amount")
+
+    # Determine buyer/seller
+    if order.type.lower() == "sell": # Order is "Sell", so owner is selling BTC; Taker is BUYER (paying money)
+        seller = db.query(models.User).filter(models.User.id == order.user_id).first()
+        buyer = db.query(models.User).filter(models.User.id == req.taker_id).first()
+    else: # order.type == "Buy" => order owner is BUYER (receiving BTC); Taker is SELLER (receiving money)
+        buyer = db.query(models.User).filter(models.User.id == order.user_id).first()
+        seller = db.query(models.User).filter(models.User.id == req.taker_id).first()
+
+    if not buyer or not seller:
+        raise HTTPException(status_code=404, detail="Buyer or seller user not found")
+
+    total_value = order.price * req.amount
+
+    # Simple balance checks (buyer must have fiat balance >= total_value)
+    if buyer.balance < total_value:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Buyer's balance insufficient")
+
+    # Update balances (prototypical fiat transfer)
+    buyer.balance -= total_value
+    seller.balance += total_value
+
+    # Reduce or delete order
+    order.available -= req.amount
+    is_filled = order.available <= 1e-9 # Check if completely filled
+    if is_filled:
+        db.delete(order)
+        
+    # Save trade record (using models.Trade)
+    trade = models.Trade(buyer_id=buyer.id, seller_id=seller.id, price=order.price, amount=req.amount)
+    db.add(trade)
+    db.commit()
+    
+    # Refresh users/order state
+    db.refresh(buyer)
+    db.refresh(seller)
+    
+    # Broadcast: trade_executed, balances, orders
+    asyncio.create_task(manager.broadcast({
+        "type": "trade_executed",
+        "trade": {"id": trade.id, "buyer_id": trade.buyer_id, "seller_id": trade.seller_id, 
+                  "price": trade.price, "amount": trade.amount, "order_id": order.id if not is_filled else None}
+    }))
+
+    asyncio.create_task(manager.broadcast({
+        "type": "balance_update",
+        "users": [
+            {"id": buyer.id, "username": buyer.username, "balance": buyer.balance},
+            {"id": seller.id, "username": seller.username, "balance": seller.balance}
+        ]
+    }))
+
+    # broadcast current order list snapshot
+    asyncio.create_task(manager.broadcast({
+        "type": "order_list",
+        "orders": _get_p2p_orders_payload(db)
+    }))
+
+    return {"trade_id": trade.id, "buyer_balance": buyer.balance, "seller_balance": seller.balance}
+
+
+# -----------------------------------------------------
+# SPOT TRADING ENDPOINTS (Prototypes - using ExchangeTradeRequest)
+# -----------------------------------------------------
+@app.post("/spot/trade")
+def place_spot_trade(trade: ExchangeTradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.SpotTrade exists in app/models.py
+    new_trade = models.SpotTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/spot/orders")
+def list_spot_orders(db: Session = Depends(get_db)):
+    # Assuming models.SpotTrade exists in app/models.py
+    return db.query(models.SpotTrade).all()
+
+# -----------------------------------------------------
+# MARGIN TRADING ENDPOINTS (Prototypes - using ExchangeTradeRequest)
+# -----------------------------------------------------
+@app.post("/margin/trade")
+def place_margin_trade(trade: ExchangeTradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.MarginTrade exists in app/models.py
+    new_trade = models.MarginTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/margin/orders")
+def list_margin_orders(db: Session = Depends(get_db)):
+    # Assuming models.MarginTrade exists in app/models.py
+    return db.query(models.MarginTrade).all()
+
+# -----------------------------------------------------
+# FUTURES (USDM) TRADING ENDPOINTS (Prototypes - using ExchangeTradeRequest)
+# -----------------------------------------------------
+@app.post("/futures/usdm/trade")
+def place_usdm_futures_trade(trade: ExchangeTradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.FuturesUsdmTrade exists in app/models.py
+    new_trade = models.FuturesUsdmTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/futures/usdm/orders")
+def list_usdm_futures_orders(db: Session = Depends(get_db)):
+    # Assuming models.FuturesUsdmTrade exists in app/models.py
+    return db.query(models.FuturesUsdmTrade).all()
+
+# -----------------------------------------------------
+# FUTURES (COINM) TRADING ENDPOINTS (Prototypes - using ExchangeTradeRequest)
+# -----------------------------------------------------
+@app.post("/futures/coinm/trade")
+def place_coinm_futures_trade(trade: ExchangeTradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.FuturesCoinmTrade exists in app/models.py
+    new_trade = models.FuturesCoinmTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/futures/coinm/orders")
+def list_coinm_futures_orders(db: Session = Depends(get_db)):
+    # Assuming models.FuturesCoinmTrade exists in app/models.py
+    return db.query(models.FuturesCoinmTrade).all()
+
+# -----------------------------------------------------
+# OPTIONS TRADING ENDPOINTS (Prototypes - using ExchangeTradeRequest)
+# -----------------------------------------------------
+@app.post("/options/trade")
+def place_options_trade(trade: ExchangeTradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.OptionsTrade exists in app/models.py
+    new_trade = models.OptionsTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/options/orders")
+def list_options_orders(db: Session = Depends(get_db)):
+    # Assuming models.OptionsTrade exists in app/models.py
+    return db.query(models.OptionsTrade).all()
+
+# -----------------------------------------------------
+# ===============================
+# 🔴 Real-time WebSocket + Prices (Existing)
+# ===============================
 
 # --- CoinGecko API Helper ---
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY") 
@@ -405,12 +551,13 @@ def sync_update_p2p_orders(db: Session, btc_inr_price: float):
 
 def sync_seed_demo_data(db: Session):
     """Seed demo user and a few demo orders for P2P page."""
+    # Create demo user if not exists
     demo_user = db.query(models.User).filter_by(username="demo_user").first()
     if not demo_user:
         demo_user = models.User(
             username="demo_user",
             email="demo@blockflow.com",
-            balance=100000.0 # Reduced for a more standard starting balance
+            balance=100000.0 # Standard starting balance
         )
         db.add(demo_user)
         db.commit()
@@ -439,16 +586,6 @@ def sync_seed_demo_data(db: Session):
                 limit_min=1000,
                 limit_max=5000,
                 payment_method="Bank Transfer"
-            ),
-             models.P2POrder(
-                user_id=demo_user.id,
-                merchant="P2P Buddy",
-                type="Buy",
-                price=49600, # Initial price, will be updated by poller
-                available=0.2,
-                limit_min=100,
-                limit_max=1000,
-                payment_method="IMPS"
             ),
         ]
         db.add_all(demo_orders)
@@ -515,7 +652,7 @@ async def coingecko_price_poller():
                 try:
                     # Run the synchronous database update in a separate thread
                     await asyncio.to_thread(sync_update_p2p_orders, db_sync, btc_inr_price)
-                    # Tell frontend to refresh the board after prices change
+                    # Broadcast to trigger frontend P2P order list refresh
                     await manager.broadcast({"type": "orders_refresh"}) 
                 finally:
                     db_sync.close()
@@ -533,7 +670,8 @@ async def websocket_endpoint(websocket: WebSocket):
             # Optionally listen for client messages (e.g., subscription requests)
             msg = await websocket.receive_text()
             if msg == "ping":
-                await websocket.send_text(json.dumps({"type": "pong", "ts": time.time()}))
+                # Respond with a standard pong message
+                await websocket.send_text(json.dumps({"type": "pong", "ts": int(time.time() * 1000)}))
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception:
@@ -552,6 +690,11 @@ async def start_background_tasks():
         await asyncio.to_thread(sync_seed_demo_data, db_sync)
     finally:
         db_sync.close()
+    
+    # 2. Start the price poller (async task)
+    asyncio.create_task(coingecko_price_poller())
+    print("✅ Realtime CoinGecko poller started")
+
     
     # 2. Start the price poller (async task)
     asyncio.create_task(coingecko_price_poller())
