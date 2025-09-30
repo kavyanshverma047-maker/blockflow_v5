@@ -6,7 +6,9 @@ import uuid
 import asyncio
 import json
 import time
-import httpx # New import for asynchronous HTTP requests
+import httpx 
+import os # NEW: Import os for environment variable access
+import random # NEW: Import random for price jittering
 
 from app import models
 from app.database import Base, engine, SessionLocal
@@ -245,79 +247,118 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# ---- CoinGecko Poller ----
+# --- CoinGecko API Helper ---
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")  # Get optional API key
+
+async def fetch_prices_from_coingecko():
+    """Fetches real-time prices from CoinGecko, using Pro API key if available."""
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    headers = {}
+    
+    # Use Pro API key if set in environment variables
+    if COINGECKO_API_KEY:
+        headers["x-cg-pro-api-key"] = COINGECKO_API_KEY 
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            url,
+            params={"ids": "bitcoin,ethereum", "vs_currencies": "usd,inr"},
+            headers=headers
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+async def broadcast_price_data(data: Dict):
+    """Parses CoinGecko response and broadcasts individual updates."""
+    
+    # Extract prices for BTC
+    btc_usd = data.get("bitcoin", {}).get("usd")
+    btc_inr = data.get("bitcoin", {}).get("inr")
+    
+    # Extract prices for ETH
+    eth_usd = data.get("ethereum", {}).get("usd")
+    eth_inr = data.get("ethereum", {}).get("inr")
+
+    # Broadcast BTC data
+    if btc_usd is not None and btc_inr is not None:
+        await manager.broadcast({
+            "type": "price_update",
+            "symbol": "BTC/USDT",
+            "usd": btc_usd,
+            "inr": btc_inr,
+            "timestamp": time.time()
+        })
+    
+    # Broadcast ETH data
+    if eth_usd is not None and eth_inr is not None:
+        await manager.broadcast({
+            "type": "price_update",
+            "symbol": "ETH/USDT",
+            "usd": eth_usd,
+            "inr": eth_inr,
+            "timestamp": time.time()
+        })
+
+
+# ---- CoinGecko Poller (Resilient Version) ----
 async def coingecko_price_poller():
     """
-    Polls CoinGecko API for BTC/ETH prices (USD/INR) and broadcasts them.
-    Implements a 60-second polling interval and exponential backoff on 429 errors.
+    Polls CoinGecko API every 30s. Applies jitter every 5s.
+    Uses cached prices and switches to a demo mode if too many errors occur.
     """
-    base_delay = 60  # Primary polling interval
-    backoff_delay = 2 # Initial backoff delay (seconds)
-    max_backoff = 300 # Max backoff delay (5 minutes)
+    # Initialize cache with safe starting values
+    cache = {
+        "bitcoin": {"usd": 50000.00, "inr": 4200000.00},
+        "ethereum": {"usd": 3000.00, "inr": 250000.00}
+    }
+    
+    TICK_INTERVAL = 5 # seconds
+    POLL_INTERVAL_TICKS = 6 # 6 * 5s = 30s
+    MAX_FAILURES = 3
+
+    tick_count = 0
+    failures = 0
+    demo_mode = False
 
     while True:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(
-                    "https://api.coingecko.com/api/v3/simple/price",
-                    params={"ids": "bitcoin,ethereum", "vs_currencies": "usd,inr"}
-                )
+        # 1. Attempt to fetch real data every 30 seconds (6 ticks of 5s)
+        if tick_count % POLL_INTERVAL_TICKS == 0:
+            try:
+                # Fetches new real data
+                new_data = await fetch_prices_from_coingecko()
                 
-                # Check for 429 specifically for rate limiting handling
-                if r.status_code == 429:
-                    raise httpx.HTTPStatusError("429 Too Many Requests", request=r.request, response=r)
-
-                r.raise_for_status() # Raise exception for other bad status codes
-                data = r.json()
+                # If successful, update cache, reset failures, and exit demo mode
+                cache = new_data
+                failures = 0
+                demo_mode = False
+                print(f"✅ Updated prices from CoinGecko at {time.strftime('%H:%M:%S')}")
+            
+            except Exception as e:
+                failures += 1
+                error_message = str(e)
                 
-                # Reset backoff delay on successful request
-                backoff_delay = 2 
-
-                # Extract and broadcast prices (existing logic)
-                btc_usd = data.get("bitcoin", {}).get("usd")
-                btc_inr = data.get("bitcoin", {}).get("inr")
-                eth_usd = data.get("ethereum", {}).get("usd")
-                eth_inr = data.get("ethereum", {}).get("inr")
-
-                if btc_usd is not None and btc_inr is not None:
-                    await manager.broadcast({
-                        "type": "price_update",
-                        "symbol": "BTC/USDT",
-                        "usd": btc_usd,
-                        "inr": btc_inr,
-                        "timestamp": time.time()
-                    })
+                # Check for rate limiting error (e.g., httpx.HTTPStatusError 429)
+                if failures > MAX_FAILURES or "429" in error_message:
+                    if not demo_mode:
+                        print("🚨 CoinGecko rate limit exceeded (or other persistent error). Switching to DEMO mode.")
+                        demo_mode = True
                 
-                if eth_usd is not None and eth_inr is not None:
-                    await manager.broadcast({
-                        "type": "price_update",
-                        "symbol": "ETH/USDT",
-                        "usd": eth_usd,
-                        "inr": eth_inr,
-                        "timestamp": time.time()
-                    })
+                print(f"⚠️ CoinGecko error (Failure {failures}): {e}")
+                # Note: If demo_mode is True, the cache retains the last good price.
 
-                print(f"Broadcasted CoinGecko data at {time.strftime('%H:%M:%S')}")
+        # 2. Apply jitter to the current prices (from cache or last successful fetch)
+        jittered_data = {}
+        for sym, vals in cache.items():
+            jittered_data[sym] = {
+                cur: round(price * (1 + random.uniform(-0.001, 0.001)), 2)
+                for cur, price in vals.items()
+            }
 
-                # Wait for the standard polling interval
-                await asyncio.sleep(base_delay)
+        # 3. Broadcast the jittered data
+        await broadcast_price_data(jittered_data)
 
-        except httpx.HTTPStatusError as e:
-            if "429 Too Many Requests" in str(e):
-                # Exponential backoff on rate limit
-                print(f"CoinGecko poller error: 429 Too Many Requests. Backing off for {backoff_delay}s.")
-                await asyncio.sleep(backoff_delay)
-                # Double the backoff delay for the next attempt, up to max_backoff
-                backoff_delay = min(backoff_delay * 2, max_backoff)
-            else:
-                print("CoinGecko poller HTTP error:", e)
-                # Wait for the standard interval before retrying other HTTP errors
-                await asyncio.sleep(base_delay)
-        
-        except Exception as e:
-            print("CoinGecko poller unexpected error:", e)
-            # Wait for the standard interval before retrying other unexpected errors
-            await asyncio.sleep(base_delay)
+        tick_count += 1
+        await asyncio.sleep(TICK_INTERVAL) # The core loop runs every 5 seconds
 
 # ---- WebSocket endpoint ----
 @app.websocket("/ws/realtime")
