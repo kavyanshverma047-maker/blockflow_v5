@@ -6,7 +6,6 @@ import uuid
 import asyncio
 import json
 import time
-import websockets
 import httpx # New import for asynchronous HTTP requests
 
 from app import models
@@ -250,7 +249,12 @@ manager = ConnectionManager()
 async def coingecko_price_poller():
     """
     Polls CoinGecko API for BTC/ETH prices (USD/INR) and broadcasts them.
+    Implements a 60-second polling interval and exponential backoff on 429 errors.
     """
+    base_delay = 60  # Primary polling interval
+    backoff_delay = 2 # Initial backoff delay (seconds)
+    max_backoff = 300 # Max backoff delay (5 minutes)
+
     while True:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -258,18 +262,23 @@ async def coingecko_price_poller():
                     "https://api.coingecko.com/api/v3/simple/price",
                     params={"ids": "bitcoin,ethereum", "vs_currencies": "usd,inr"}
                 )
-                r.raise_for_status() # Raise exception for bad status codes
+                
+                # Check for 429 specifically for rate limiting handling
+                if r.status_code == 429:
+                    raise httpx.HTTPStatusError("429 Too Many Requests", request=r.request, response=r)
+
+                r.raise_for_status() # Raise exception for other bad status codes
                 data = r.json()
                 
-                # Extract prices for BTC
+                # Reset backoff delay on successful request
+                backoff_delay = 2 
+
+                # Extract and broadcast prices (existing logic)
                 btc_usd = data.get("bitcoin", {}).get("usd")
                 btc_inr = data.get("bitcoin", {}).get("inr")
-                
-                # Extract prices for ETH
                 eth_usd = data.get("ethereum", {}).get("usd")
                 eth_inr = data.get("ethereum", {}).get("inr")
 
-                # Broadcast BTC data
                 if btc_usd is not None and btc_inr is not None:
                     await manager.broadcast({
                         "type": "price_update",
@@ -279,7 +288,6 @@ async def coingecko_price_poller():
                         "timestamp": time.time()
                     })
                 
-                # Broadcast ETH data
                 if eth_usd is not None and eth_inr is not None:
                     await manager.broadcast({
                         "type": "price_update",
@@ -291,10 +299,25 @@ async def coingecko_price_poller():
 
                 print(f"Broadcasted CoinGecko data at {time.strftime('%H:%M:%S')}")
 
-        except Exception as e:
-            print("CoinGecko poller error:", e)
+                # Wait for the standard polling interval
+                await asyncio.sleep(base_delay)
 
-        await asyncio.sleep(30)  # fetch every 30 seconds
+        except httpx.HTTPStatusError as e:
+            if "429 Too Many Requests" in str(e):
+                # Exponential backoff on rate limit
+                print(f"CoinGecko poller error: 429 Too Many Requests. Backing off for {backoff_delay}s.")
+                await asyncio.sleep(backoff_delay)
+                # Double the backoff delay for the next attempt, up to max_backoff
+                backoff_delay = min(backoff_delay * 2, max_backoff)
+            else:
+                print("CoinGecko poller HTTP error:", e)
+                # Wait for the standard interval before retrying other HTTP errors
+                await asyncio.sleep(base_delay)
+        
+        except Exception as e:
+            print("CoinGecko poller unexpected error:", e)
+            # Wait for the standard interval before retrying other unexpected errors
+            await asyncio.sleep(base_delay)
 
 # ---- WebSocket endpoint ----
 @app.websocket("/ws/realtime")
@@ -323,5 +346,6 @@ async def start_background_tasks():
     """Starts the CoinGecko price poller task on application startup."""
     asyncio.create_task(coingecko_price_poller())
     print("✅ Realtime CoinGecko poller started")
+
 
 
