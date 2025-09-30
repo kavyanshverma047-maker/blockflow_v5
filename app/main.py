@@ -202,19 +202,91 @@ def delete_p2p_order(order_id: int, db: Session = Depends(get_db)):
     return {"message": "Order deleted successfully"}
 
 # -----------------------------------------------------
-# SPOT TRADING (prototype)
+# SPOT TRADING ENDPOINTS
 # -----------------------------------------------------
 @app.post("/spot/trade")
 def place_spot_trade(trade: TradeRequest, db: Session = Depends(get_db)):
-    # For prototype: just echo the trade request
-    return {
-        "message": "Spot trade placed successfully (prototype)",
-        "trade": trade.dict()
-    }
+    # Assuming models.SpotTrade exists in app/models.py
+    new_trade = models.SpotTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
 
-# ... (other stub endpoints remain unchanged)
+@app.get("/spot/orders")
+def list_spot_orders(db: Session = Depends(get_db)):
+    # Assuming models.SpotTrade exists in app/models.py
+    return db.query(models.SpotTrade).all()
+
 # -----------------------------------------------------
+# MARGIN TRADING ENDPOINTS
+# -----------------------------------------------------
+@app.post("/margin/trade")
+def place_margin_trade(trade: TradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.MarginTrade exists in app/models.py
+    new_trade = models.MarginTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
 
+@app.get("/margin/orders")
+def list_margin_orders(db: Session = Depends(get_db)):
+    # Assuming models.MarginTrade exists in app/models.py
+    return db.query(models.MarginTrade).all()
+
+# -----------------------------------------------------
+# FUTURES (USDM) TRADING ENDPOINTS
+# -----------------------------------------------------
+@app.post("/futures/usdm/trade")
+def place_usdm_futures_trade(trade: TradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.FuturesUsdmTrade exists in app/models.py
+    new_trade = models.FuturesUsdmTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/futures/usdm/orders")
+def list_usdm_futures_orders(db: Session = Depends(get_db)):
+    # Assuming models.FuturesUsdmTrade exists in app/models.py
+    return db.query(models.FuturesUsdmTrade).all()
+
+# -----------------------------------------------------
+# FUTURES (COINM) TRADING ENDPOINTS
+# -----------------------------------------------------
+@app.post("/futures/coinm/trade")
+def place_coinm_futures_trade(trade: TradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.FuturesCoinmTrade exists in app/models.py
+    new_trade = models.FuturesCoinmTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/futures/coinm/orders")
+def list_coinm_futures_orders(db: Session = Depends(get_db)):
+    # Assuming models.FuturesCoinmTrade exists in app/models.py
+    return db.query(models.FuturesCoinmTrade).all()
+
+# -----------------------------------------------------
+# OPTIONS TRADING ENDPOINTS
+# -----------------------------------------------------
+@app.post("/options/trade")
+def place_options_trade(trade: TradeRequest, db: Session = Depends(get_db)):
+    # Assuming models.OptionsTrade exists in app/models.py
+    new_trade = models.OptionsTrade(**trade.dict())
+    db.add(new_trade)
+    db.commit()
+    db.refresh(new_trade)
+    return new_trade
+
+@app.get("/options/orders")
+def list_options_orders(db: Session = Depends(get_db)):
+    # Assuming models.OptionsTrade exists in app/models.py
+    return db.query(models.OptionsTrade).all()
+
+# -----------------------------------------------------
 # ===============================
 # 🔴 Real-time WebSocket + Prices
 # ===============================
