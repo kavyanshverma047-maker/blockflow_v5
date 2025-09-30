@@ -1,5 +1,5 @@
 # app/models.py
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, Enum, DateTime
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
@@ -12,11 +12,14 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
     email = Column(String, unique=True, index=True, nullable=True)
-    password_hash = Column(String, nullable=True)  # store hashed password (optional for demo)
-    balance = Column(Float, default=100000.0)  # demo seeded balance
+    password_hash = Column(String, nullable=True)
+    balance = Column(Float, default=100000.0)
 
+    # Relationships
     orders = relationship("P2POrder", back_populates="user")
-    trades = relationship("Trade", back_populates="user")
+    # two separate trade relationships
+    trades_as_buyer = relationship("Trade", back_populates="buyer", foreign_keys="Trade.buyer_id")
+    trades_as_seller = relationship("Trade", back_populates="seller", foreign_keys="Trade.seller_id")
 
 
 class P2POrder(Base):
@@ -46,7 +49,6 @@ class Trade(Base):
     amount = Column(Float, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # link to user (optional convenience)
-    user = relationship("User", back_populates="trades", foreign_keys=[buyer_id])
-
-
+    # Define relationships explicitly
+    buyer = relationship("User", back_populates="trades_as_buyer", foreign_keys=[buyer_id])
+    seller = relationship("User", back_populates="trades_as_seller", foreign_keys=[seller_id])
