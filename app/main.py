@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, Set, Dict, List # Added List
+from typing import Optional, Set, Dict, List
 import uuid
 import asyncio
 import json
@@ -294,7 +294,7 @@ async def coingecko_price_poller():
         except Exception as e:
             print("CoinGecko poller error:", e)
 
-        await asyncio.sleep(5)  # fetch every 5 seconds
+        await asyncio.sleep(30)  # fetch every 30 seconds
 
 # ---- WebSocket endpoint ----
 @app.websocket("/ws/realtime")
