@@ -1,8 +1,13 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Set, Dict
 import uuid
+import asyncio
+import json
+import time
+import aiohttp
+import websockets
 
 from app import models
 from app.database import Base, engine, SessionLocal
@@ -203,6 +208,123 @@ def get_research():
 @app.get("/copy-trading")
 def get_copy_trading():
     return {"message": "Copy trading endpoint (prototype)"}
+
+# ===============================
+# 🔴 Real-time WebSocket + Prices
+# ===============================
+# Track connected websocket clients
+realtime_clients: Set[WebSocket] = set()
+
+# Global realtime state
+realtime_state: Dict = {
+    "btc_inr": None,
+    "btc_usd": None,
+    "usd_inr": None,
+    "last_update": 0,
+    "orders": []
+}
+
+# ---- Broadcast helper ----
+async def broadcast_state():
+    """Sends the current state to all connected WebSocket clients."""
+    payload = {"type": "price_update", "data": realtime_state}
+    text = json.dumps(payload, default=str)
+    to_remove = set()
+    # Use list(realtime_clients) to iterate over a copy, avoiding errors if a client disconnects mid-loop
+    for ws in list(realtime_clients):
+        try:
+            await ws.send_text(text)
+        except Exception:
+            # Mark disconnected client for removal
+            to_remove.add(ws)
+    # Remove disconnected clients
+    for ws in to_remove:
+        realtime_clients.discard(ws)
+
+# ---- Binance BTC/USDT price listener ----
+async def binance_trade_listener():
+    """Connects to Binance WS for real-time BTC/USDT trades and updates state."""
+    BINANCE_WS = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+    while True:
+        try:
+            # Use websockets library for client connection
+            async with websockets.connect(BINANCE_WS, ping_interval=20, ping_timeout=10) as ws:
+                async for message in ws:
+                    msg = json.loads(message)
+                    price_str = msg.get("p")
+                    if price_str:
+                        btc_usd = float(price_str)
+                        realtime_state["btc_usd"] = btc_usd
+                        realtime_state["last_update"] = time.time()
+                        # Calculate BTC/INR if the exchange rate is known
+                        if realtime_state.get("usd_inr"):
+                            realtime_state["btc_inr"] = btc_usd * realtime_state["usd_inr"]
+                        await broadcast_state()
+        except Exception as e:
+            # Print error and wait before attempting to reconnect
+            print("Binance WS error, reconnecting:", e)
+            await asyncio.sleep(3)
+
+# ---- CoinGecko USD→INR poller ----
+async def coin_gecko_usd_inr_poller():
+    """Polls CoinGecko API for BTC/INR, BTC/USD, and calculates USD/INR rate."""
+    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=inr,usd"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        d = await resp.json()
+                        btc_inr = d["bitcoin"]["inr"]
+                        btc_usd = d["bitcoin"]["usd"]
+                        # Calculate the implied USD/INR exchange rate
+                        usd_inr = btc_inr / btc_usd
+                        realtime_state["usd_inr"] = usd_inr
+
+                        # If we have the real-time BTC/USD from Binance, use it to calculate BTC/INR
+                        if realtime_state.get("btc_usd"):
+                            realtime_state["btc_inr"] = realtime_state["btc_usd"] * usd_inr
+                        
+                        realtime_state["last_update"] = time.time()
+                        await broadcast_state()
+            except Exception as e:
+                print("CoinGecko error:", e)
+            # Poll every 5 seconds
+            await asyncio.sleep(5)
+
+# ---- WebSocket endpoint ----
+@app.websocket("/ws/realtime")
+async def websocket_endpoint(websocket: WebSocket):
+    """Handles new WebSocket connections for real-time updates."""
+    await websocket.accept()
+    realtime_clients.add(websocket)
+    try:
+        # send initial snapshot on connection
+        await websocket.send_text(json.dumps({"type": "init", "data": realtime_state}, default=str))
+        while True:
+            # Listen for incoming messages (e.g., ping)
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text(json.dumps({"type": "pong", "ts": time.time()}))
+            elif msg == "get_orders":
+                # Send current orders list (if implemented)
+                await websocket.send_text(json.dumps({"type": "orders_update", "data": realtime_state.get("orders", [])}, default=str))
+    except WebSocketDisconnect:
+        # Client gracefully disconnected
+        realtime_clients.discard(websocket)
+    except Exception:
+        # Client disconnected due to an error
+        realtime_clients.discard(websocket)
+
+# ---- Startup tasks ----
+@app.on_event("startup")
+async def startup_event():
+    """Starts the background listeners for real-time price updates."""
+    loop = asyncio.get_event_loop()
+    # Create background tasks for fetching/listening to data
+    loop.create_task(binance_trade_listener())
+    loop.create_task(coin_gecko_usd_inr_poller())
+    print("✅ Realtime tasks started")
 
 
 
