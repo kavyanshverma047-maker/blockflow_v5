@@ -7,6 +7,7 @@ import asyncio
 import json
 import time
 import websockets
+import httpx # New import for asynchronous HTTP requests
 
 from app import models
 from app.database import Base, engine, SessionLocal
@@ -268,39 +269,31 @@ async def binance_trade_listener():
 async def coin_gecko_usd_inr_poller():
     """
     Polls CoinGecko API for BTC/INR, BTC/USD, and calculates USD/INR rate.
-    NOTE: This task currently uses 'aiohttp' functionality (ClientSession, session.get),
-    but the 'aiohttp' import was removed per user request. This task will now fail at runtime
-    unless an alternative HTTP client is implemented or 'aiohttp' is re-imported.
+    Uses httpx instead of aiohttp (for Render compatibility).
     """
     url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=inr,usd"
-    # Placeholder/commented out code below due to missing `aiohttp` import
-    # async with aiohttp.ClientSession() as session:
-    #     while True:
-    #         try:
-    #             async with session.get(url) as resp:
-    #                 if resp.status == 200:
-    #                     d = await resp.json()
-    #                     btc_inr = d["bitcoin"]["inr"]
-    #                     btc_usd = d["bitcoin"]["usd"]
-    #                     # Calculate the implied USD/INR exchange rate
-    #                     usd_inr = btc_inr / btc_usd
-    #                     realtime_state["usd_inr"] = usd_inr
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    d = resp.json()
+                    btc_inr = d["bitcoin"]["inr"]
+                    btc_usd = d["bitcoin"]["usd"]
+                    # Calculate the implied USD/INR exchange rate
+                    usd_inr = btc_inr / btc_usd
+                    realtime_state["usd_inr"] = usd_inr
 
-    #                     # If we have the real-time BTC/USD from Binance, use it to calculate BTC/INR
-    #                     if realtime_state.get("btc_usd"):
-    #                         realtime_state["btc_inr"] = realtime_state["btc_usd"] * usd_inr
-                        
-    #                     realtime_state["last_update"] = time.time()
-    #                     await broadcast_state()
-    #         except Exception as e:
-    #             print("CoinGecko error:", e)
-    #         # Poll every 5 seconds
-    #         await asyncio.sleep(5)
-    
-    # Simple placeholder loop to prevent the task from immediately crashing if not fully removed
-    while True:
-        await asyncio.sleep(5)
-        print("CoinGecko poller is currently inactive due to missing HTTP library.")
+                    # If we have the real-time BTC/USD from Binance, use it to calculate BTC/INR
+                    if realtime_state.get("btc_usd"):
+                        realtime_state["btc_inr"] = realtime_state["btc_usd"] * usd_inr
+                    
+                    realtime_state["last_update"] = time.time()
+                    await broadcast_state()
+            except Exception as e:
+                print("CoinGecko error:", e)
+            # Poll every 5 seconds
+            await asyncio.sleep(5)
 
 # ---- WebSocket endpoint ----
 @app.websocket("/ws/realtime")
