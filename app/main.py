@@ -565,14 +565,13 @@ async def startup_tasks():
         # 2️⃣ Start background price feed + TP/SL monitor
         from app.price_feed import run_price_feed
         from app.trade_engine import monitor_tp_sl
-
         asyncio.create_task(run_price_feed())
         asyncio.create_task(monitor_tp_sl())
 
         print("🌐 Demo liquidity + price feed + TP/SL engine started successfully.")
-
     except Exception as e:
         print("⚠️ Startup error:", e)
+
 
 
  # ============================================================
