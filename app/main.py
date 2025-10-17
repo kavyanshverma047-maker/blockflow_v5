@@ -25,6 +25,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+from app.price_feed import fetch_prices
+from app.demo_trader import simulate_trades
+
+app = FastAPI(title="Blockflow Exchange (Unified Demo)")
+
+@app.on_event("startup")
+async def start_background_services():
+    asyncio.create_task(fetch_prices())
+    asyncio.create_task(simulate_trades())
+
 
 # Try import models from app.models (preferred) else models
 try:
