@@ -290,7 +290,11 @@ def admin_seed(db: Session = Depends(get_db)):
 
     db.commit()
     # broadcast a seed completed message to websocket clients
-    asyncio.create_task(ws_manager.broadcast({"type":"seed_completed", "users": SEED_COUNT}))
+try:
+    loop = asyncio.get_running_loop()
+    loop.create_task(ws_manager.broadcast({"type": "seed_completed", "users": SEED_COUNT}))
+except RuntimeError:
+    asyncio.run(ws_manager.broadcast({"type": "seed_completed", "users": SEED_COUNT}))
     return {"ok": True, "seeded_users": SEED_COUNT}
 
 # ---------------- WebSocket endpoint ----------------
