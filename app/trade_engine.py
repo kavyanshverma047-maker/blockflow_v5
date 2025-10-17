@@ -49,3 +49,54 @@ async def execute_trade(user, symbol, side, qty, leverage=10, tp=None, sl=None):
 
     print(f"[TRADE_ENGINE ✅] {side} {symbol} trade executed successfully.")
     return trade
+# ============================================================
+# 🔥 AUTO TP/SL MONITOR ENGINE (background task)
+# ============================================================
+import asyncio
+from datetime import datetime
+from app.price_feed import get_price  # make sure this exists
+from app.models import FuturesUsdmTrade, FuturesCoinmTrade, SpotTrade
+from app.utils import update_balance
+
+async def monitor_tp_sl():
+    print("🔄 TP/SL monitor started...")
+    while True:
+        try:
+            for model in [SpotTrade, FuturesUsdmTrade, FuturesCoinmTrade]:
+                trades = model.select().where(model.is_open == True)
+                for t in trades:
+                    current_price = get_price(t.symbol)
+                    if not current_price:
+                        continue
+
+                    # ✅ Take Profit hit
+                    if t.tp and (
+                        (t.side == "buy" and current_price >= t.tp) or
+                        (t.side == "sell" and current_price <= t.tp)
+                    ):
+                        t.is_open = False
+                        t.closed_at = datetime.utcnow()
+                        t.pnl = (t.tp - t.entry_price) * t.qty * (1 if t.side == "buy" else -1)
+                        t.save()
+                        update_balance(t.user.username, t.pnl)
+                        print(f"✅ TP hit: {t.symbol} {t.side.upper()} at {t.tp}")
+
+                    # ❌ Stop Loss hit
+                    elif t.sl and (
+                        (t.side == "buy" and current_price <= t.sl) or
+                        (t.side == "sell" and current_price >= t.sl)
+                    ):
+                        t.is_open = False
+                        t.closed_at = datetime.utcnow()
+                        t.pnl = (t.sl - t.entry_price) * t.qty * (1 if t.side == "buy" else -1)
+                        t.save()
+                        update_balance(t.user.username, t.pnl)
+                        print(f"⚠️ SL hit: {t.symbol} {t.side.upper()} at {t.sl}")
+
+            await asyncio.sleep(3)  # check every 3 seconds
+
+        except Exception as e:
+            print("❌ TP/SL Monitor Error:", e)
+            await asyncio.sleep(5)
+    
+
