@@ -40,3 +40,11 @@ def close_position(pos_id: str, price: float):
 
 def get_active_positions():
     return [p for p in positions.values() if not p["closed"]]
+async def update_position(symbol: str, user_id: int, side: str, qty: float, price: float):
+    """
+    Update user's position after trade execution.
+    """
+    print(f"📊 Updating position for {symbol} user={user_id} side={side}")
+    # Placeholder logic
+    return {"symbol": symbol, "user": user_id, "side": side, "qty": qty, "price": price}
+
