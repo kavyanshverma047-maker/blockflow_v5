@@ -238,6 +238,26 @@ async def spot_trade(req: SpotPlaceSchema, db: Session = Depends(get_db)):
 async def spot_orders(db: Session = Depends(get_db)):
     rows = db.query(models.SpotTrade).order_by(models.SpotTrade.timestamp.desc()).limit(200).all()
     return [{"id": r.id, "username": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "side": r.side, "ts": str(r.timestamp)} for r in rows]
+# ============================================================
+# Integrate Trade Engine (with TP/SL logic)
+# ============================================================
+from app.trade_engine import execute_trade
+
+@app.post("/api/trade/place")
+async def api_place_trade(req: SpotPlaceSchema):
+    """
+    Universal trade executor — supports TP/SL & leverage
+    """
+    trade = await execute_trade(
+        user=req.username,
+        symbol=req.pair,
+        side=req.side,
+        qty=req.amount,
+        leverage=getattr(req, "leverage", 10),
+        tp=getattr(req, "tp", None),
+        sl=getattr(req, "sl", None)
+    )
+    return {"ok": True, "trade": trade}
 
 # --------------------------
 # Margin endpoints
