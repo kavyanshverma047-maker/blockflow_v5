@@ -10,13 +10,11 @@ import asyncio
 import random
 from datetime import datetime
 
+# 🔹 Available market symbols
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "MATICUSDT"]
+
 # 🔹 Global shared dictionary (used by demo_trader & orderbook APIs)
-LIVE_PRICES = {
-    "BTCUSDT": 68000.0,
-    "ETHUSDT": 3200.0,
-    "SOLUSDT": 150.0,
-    "MATICUSDT": 0.8,
-}
+LIVE_PRICES = {s: 0.0 for s in SYMBOLS}
 
 # 🔹 Rich version for API summary display
 latest_prices = {
@@ -25,6 +23,10 @@ latest_prices = {
     "SOLUSDT": {"price": 150.0, "change": 0.0, "ts": None},
     "MATICUSDT": {"price": 0.8, "change": 0.0, "ts": None},
 }
+
+# Initialize LIVE_PRICES with starting prices
+for s, info in latest_prices.items():
+    LIVE_PRICES[s] = info["price"]
 
 
 async def run_price_feed():
@@ -64,3 +66,4 @@ def fetch_prices():
     Used in main.py (/api/market/orderbook) and testing endpoints.
     """
     return latest_prices
+
