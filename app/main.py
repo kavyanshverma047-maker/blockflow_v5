@@ -42,6 +42,8 @@ try:
 except Exception:
     import models
 
+from app.models import User, P2POrder, SpotTrade, MarginTrade, FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade
+
 # --------------------------
 # DB detection
 # --------------------------
