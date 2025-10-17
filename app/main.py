@@ -531,15 +531,34 @@ async def market_snapshot_loop():
                 pass
         await asyncio.sleep(5)  # every 5 seconds
 
+# ============================================================
+# STARTUP TASKS (Auto Seeder + Price Feed Loop)
+# ============================================================
+
+import asyncio
+
 @app.on_event("startup")
-async def startup_event():
-    # start periodic broadcaster in background
+async def startup_tasks():
+    """Runs background tasks automatically when app starts"""
+    print("✅ Blockflow backend startup tasks running...")
+
     try:
-        asyncio.create_task(market_snapshot_loop())
-    except Exception:
-        # if even create_task fails (unlikely in FastAPI), ignore
-        pass
-    print("🚀 Blockflow investor-demo backend started (Render-safe)")
+        # Start demo liquidity engine (500 users + continuous trades)
+        from app.exchange_seed import seed_and_run
+        asyncio.create_task(seed_and_run(run_continuous=True))
+
+        # Optional: start price feed background loop
+        try:
+            from app.price_feed import run_price_feed
+            asyncio.create_task(run_price_feed())
+        except Exception as feed_err:
+            print("⚠️ Price feed unavailable:", feed_err)
+
+        print("🌱 Demo liquidity + price feed started successfully.")
+
+    except Exception as e:
+        print("❌ Error during startup tasks:", e)
+
  # ============================================================
 # Market & Trade Feed APIs (for frontend live sync)
 # ============================================================
