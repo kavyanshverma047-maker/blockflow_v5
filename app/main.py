@@ -316,6 +316,17 @@ async def options_trade(req: OptionsPlaceSchema, db: Session = Depends(get_db)):
 async def options_orders(db: Session = Depends(get_db)):
     rows = db.query(models.OptionsTrade).order_by(models.OptionsTrade.timestamp.desc()).limit(200).all()
     return [{"id": r.id, "user": r.username, "pair": r.pair, "strike": r.strike, "premium": r.premium, "size": r.size} for r in rows]
+# =========================
+# COMMON DICT METHOD FOR ALL MODELS
+# =========================
+from sqlalchemy.inspection import inspect
+
+def model_as_dict(self):
+    return {c.key: getattr(self, c.key) for c in inspect(self).mapper.column_attrs}
+
+# Attach helper to each model dynamically
+for cls in [User, P2POrder, SpotTrade, MarginTrade, FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade]:
+    cls.as_dict = model_as_dict
 
 
 # --------------------------
@@ -527,6 +538,38 @@ async def startup_event():
         # if even create_task fails (unlikely in FastAPI), ignore
         pass
     print("🚀 Blockflow investor-demo backend started (Render-safe)")
+ # ============================================================
+# Market & Trade Feed APIs (for frontend live sync)
+# ============================================================
+
+@app.get("/api/trades")
+def get_recent_trades(limit: int = 50):
+    """Fetch latest trades across all markets"""
+    with SessionLocal() as db:
+        spot = db.query(models.SpotTrade).order_by(models.SpotTrade.timestamp.desc()).limit(limit).all()
+        futures_usdm = db.query(models.FuturesUsdmTrade).order_by(models.FuturesUsdmTrade.timestamp.desc()).limit(limit).all()
+        futures_coinm = db.query(models.FuturesCoinmTrade).order_by(models.FuturesCoinmTrade.timestamp.desc()).limit(limit).all()
+        margin = db.query(models.MarginTrade).order_by(models.MarginTrade.timestamp.desc()).limit(limit).all()
+        options = db.query(models.OptionsTrade).order_by(models.OptionsTrade.timestamp.desc()).limit(limit).all()
+        data = {
+            "spot": [t.as_dict() for t in spot],
+            "margin": [t.as_dict() for t in margin],
+            "futures_usdm": [t.as_dict() for t in futures_usdm],
+            "futures_coinm": [t.as_dict() for t in futures_coinm],
+            "options": [t.as_dict() for t in options],
+        }
+        return data
+
+
+@app.get("/api/market/orderbook")
+def get_orderbook():
+    """Return latest simulated orderbook / prices"""
+    try:
+        from app.price_feed import latest_prices
+        return {"orderbook": latest_prices}
+    except Exception:
+        return {"error": "price_feed not active yet"}
+
 
 # --------------------------
 # End file
