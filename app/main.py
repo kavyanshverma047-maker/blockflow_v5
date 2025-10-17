@@ -1,44 +1,41 @@
 # app/main.py
 """
-Final unified Blockflow backend (Render-ready).
-- Auto-detects DB path (DATABASE_URL env or common fallbacks)
-- Attempts `import app.models` then `import models`
-- Provides P2P, Spot, Margin, Futures (USDM & COINM), Options endpoints
-- WebSocket /ws/market broadcast
-- /admin/seed to create demo liquidity (configurable via env SEED_COUNT)
-- /api/ledger/summary for ledger/proof-of-reserves
-- Safe startup for Render (no uvicorn.run())
+Blockflow Exchange — Final investor-grade backend (Render-ready)
+Features:
+ - P2P orders (create, list, settle)
+ - Spot / Margin / Futures (USDM & COINM) / Options endpoints (place & list)
+ - WebSocket real-time feed at /ws/market
+ - /admin/seed -> seeds 500 demo users + trades (async, safe)
+ - /api/ledger/summary -> quick ledger totals & PoR-like hash
+ - Periodic market simulator to keep UI alive
+ - DB autodetect (DATABASE_URL env or sqlite fallback)
+ - Uses existing app.models (User, P2POrder, SpotTrade, MarginTrade,
+   FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade, Base)
 """
 
 import os
 import json
 import random
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-# ---- dynamic models import (works whether models live at app.models or models) ----
+# Try import models from app.models (preferred) else models
 try:
-    import app.models as models  # preferred
+    import app.models as models
 except Exception:
-    try:
-        import models
-    except Exception as e:
-        raise ImportError("Could not import models. Ensure app/models.py or models.py exists.") from e
+    import models
 
-# ---- DB path detection ----
-# Priority:
-# 1) env DATABASE_URL
-# 2) sqlite in project root ./blockflow_v5.db
-# 3) sqlite in ./app/blockflow_v5.db
-# 4) sqlite at ../blockflow_v5.db
-def _detect_db_url() -> str:
+# --------------------------
+# DB detection
+# --------------------------
+def detect_db_url() -> str:
     env = os.getenv("DATABASE_URL")
     if env:
         return env
@@ -49,32 +46,30 @@ def _detect_db_url() -> str:
         "sqlite:///./blockflow.db",
     ]
     for c in candidates:
-        # check file existence when using sqlite path (strip prefix)
         if c.startswith("sqlite:///"):
-            path = c.replace("sqlite:///", "")
-            if os.path.exists(path):
+            f = c.replace("sqlite:///", "")
+            if os.path.exists(f):
                 return c
-    # fallback to first candidate
     return candidates[0]
 
-DATABASE_URL = _detect_db_url()
+DATABASE_URL = detect_db_url()
 
-# ---- SQLAlchemy engine & session ----
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# create tables if missing (safe to call on startup)
+# ensure tables exist (safe)
 try:
     models.Base.metadata.create_all(bind=engine)
 except Exception as e:
-    # provide explicit error context if models mismatch
-    print("ERROR creating tables:", e)
+    print("WARNING: could not auto-create tables:", e)
 
-# ---- FastAPI app ----
-app = FastAPI(title="Blockflow Exchange (Unified Demo)", version="v5")
+# --------------------------
+# FastAPI app
+# --------------------------
+app = FastAPI(title="Blockflow Exchange (Investor Demo)", version="5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# ---- dependency ----
+# dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -82,260 +77,451 @@ def get_db():
     finally:
         db.close()
 
-# ---- websocket manager ----
-class WSManager:
+# --------------------------
+# WebSocket manager
+# --------------------------
+class WebSocketManager:
     def __init__(self):
-        self.clients: List[WebSocket] = []
+        self.connections: List[WebSocket] = []
+        self.lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
-        self.clients.append(ws)
+        async with self.lock:
+            self.connections.append(ws)
 
-    def disconnect(self, ws: WebSocket):
-        if ws in self.clients:
-            self.clients.remove(ws)
+    async def disconnect(self, ws: WebSocket):
+        async with self.lock:
+            if ws in self.connections:
+                self.connections.remove(ws)
 
-    async def broadcast(self, payload: Dict[str, Any]):
+    async def broadcast_json(self, payload: Dict[str, Any]):
         text = json.dumps(payload, default=str)
-        living = []
-        for ws in list(self.clients):
+        # copy list to avoid mutation during iteration
+        async with self.lock:
+            conns = list(self.connections)
+        dead = []
+        for ws in conns:
             try:
                 await ws.send_text(text)
-                living.append(ws)
             except Exception:
-                # skip dead
-                pass
-        self.clients = living
+                dead.append(ws)
+        if dead:
+            async with self.lock:
+                for d in dead:
+                    if d in self.connections:
+                        self.connections.remove(d)
 
-ws_manager = WSManager()
+ws_manager = WebSocketManager()
 
-# ---- Pydantic request schemas ----
-class P2PCreateReq(BaseModel):
+# --------------------------
+# Pydantic request schemas
+# --------------------------
+class P2PCreateSchema(BaseModel):
     username: str
     asset: str
     price: float
     amount: float
     payment_method: str
 
-class TradeReq(BaseModel):
+class SpotPlaceSchema(BaseModel):
     username: str
     pair: str
-    side: str  # buy/sell
+    side: str  # buy / sell
     price: float
     amount: float
-    leverage: Optional[float] = 1.0
 
-class OptionReq(BaseModel):
+class FuturesPlaceSchema(BaseModel):
+    username: str
+    pair: str
+    side: str
+    price: float
+    amount: float
+    leverage: Optional[float] = 20.0
+
+class OptionsPlaceSchema(BaseModel):
     username: str
     pair: str
     side: str
     strike: float
-    option_type: str
+    option_type: str  # call/put
     premium: float
     size: float
 
-# ---- Health / root ----
+# --------------------------
+# root / health
+# --------------------------
 @app.get("/")
 async def root():
-    return {"ok": True, "time": datetime.utcnow().isoformat(), "db": DATABASE_URL}
+    return {"ok": True, "app": "blockflow-exchange", "time": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "services": ["p2p", "spot", "margin", "futures_usdm", "futures_coinm", "options"], "db": DATABASE_URL}
+    return {"ok": True, "db": DATABASE_URL}
 
-# ---------------- P2P ----------------
+# --------------------------
+# P2P endpoints
+# --------------------------
 @app.get("/p2p/orders")
-def p2p_list(db: Session = Depends(get_db)):
-    rows = db.query(models.P2POrder).order_by(models.P2POrder.created_at.desc()).all()
-    return [dict(id=r.id, username=r.username, asset=r.asset, price=r.price, amount=r.amount, payment_method=r.payment_method, status=r.status, created_at=str(r.created_at)) for r in rows]
+async def p2p_list(db: Session = Depends(get_db)):
+    rows = db.query(models.P2POrder).order_by(models.P2POrder.created_at.desc()).limit(500).all()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r.id,
+            "username": getattr(r, "username", getattr(r, "merchant", None)),
+            "asset": r.asset,
+            "price": r.price,
+            "amount": r.amount,
+            "payment_method": getattr(r, "payment_method", None),
+            "status": r.status,
+            "created_at": str(r.created_at)
+        })
+    return out
 
 @app.post("/p2p/create")
-async def p2p_create(req: P2PCreateReq, db: Session = Depends(get_db)):
-    o = models.P2POrder(username=req.username, asset=req.asset, price=req.price, amount=req.amount, payment_method=req.payment_method, status="open")
-    db.add(o); db.commit(); db.refresh(o)
-    await ws_manager.broadcast({"type":"p2p_new", "order": {"id": o.id, "username": o.username, "asset": o.asset, "price": o.price, "amount": o.amount}})
+async def p2p_create(req: P2PCreateSchema, db: Session = Depends(get_db)):
+    o = models.P2POrder(
+        username=req.username,
+        asset=req.asset,
+        price=req.price,
+        amount=req.amount,
+        payment_method=req.payment_method,
+        status="active"
+    )
+    db.add(o)
+    db.commit()
+    db.refresh(o)
+    # broadcast to WS clients (best-effort)
+    try:
+        await ws_manager.broadcast_json({"type":"p2p_new", "order": {"id": o.id, "username": o.username, "asset": o.asset, "price": o.price, "amount": o.amount}})
+    except Exception:
+        pass
     return {"ok": True, "id": o.id}
 
 @app.post("/p2p/settle/{order_id}")
 async def p2p_settle(order_id: int, db: Session = Depends(get_db)):
     o = db.query(models.P2POrder).filter(models.P2POrder.id == order_id).first()
     if not o:
-        raise HTTPException(404, "order not found")
+        raise HTTPException(status_code=404, detail="order not found")
     o.status = "settled"
     db.commit()
-    tds = round(o.price * o.amount * 0.01, 2)
-    await ws_manager.broadcast({"type":"p2p_settle", "order_id": order_id, "tds": tds})
+    tds = round((o.price or 0) * (o.amount or 0) * 0.01, 2)
+    # broadcast settlement
+    try:
+        await ws_manager.broadcast_json({"type":"p2p_settle", "order_id": o.id, "tds": tds})
+    except Exception:
+        pass
     return {"ok": True, "tds": tds}
 
-# ---------------- Spot ----------------
+# --------------------------
+# Spot endpoints
+# --------------------------
 @app.post("/spot/trade")
-async def spot_trade(req: TradeReq, db: Session = Depends(get_db)):
+async def spot_trade(req: SpotPlaceSchema, db: Session = Depends(get_db)):
     t = models.SpotTrade(username=req.username, pair=req.pair, side=req.side, price=req.price, amount=req.amount)
     db.add(t); db.commit(); db.refresh(t)
-    await ws_manager.broadcast({"type":"trade", "market":"spot", "trade": {"id": t.id, "pair": t.pair, "price": t.price, "amount": t.amount, "side": t.side}})
-    return {"ok": True, "trade_id": t.id}
+    try:
+        await ws_manager.broadcast_json({"type":"trade", "market":"spot", "trade": {"id": t.id, "pair": t.pair, "price": t.price, "amount": t.amount, "side": t.side}})
+    except Exception:
+        pass
+    return {"ok": True, "id": t.id}
 
 @app.get("/spot/orders")
-def spot_orders(db: Session = Depends(get_db)):
-    rows = db.query(models.SpotTrade).order_by(models.SpotTrade.timestamp.desc()).limit(500).all()
-    return [dict(id=r.id, username=r.username, pair=r.pair, side=r.side, price=r.price, amount=r.amount, ts=str(r.timestamp)) for r in rows]
+async def spot_orders(db: Session = Depends(get_db)):
+    rows = db.query(models.SpotTrade).order_by(models.SpotTrade.timestamp.desc()).limit(200).all()
+    return [{"id": r.id, "username": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "side": r.side, "ts": str(r.timestamp)} for r in rows]
 
-# ---------------- Margin ----------------
+# --------------------------
+# Margin endpoints
+# --------------------------
 @app.post("/margin/trade")
-async def margin_trade(req: TradeReq, db: Session = Depends(get_db)):
-    t = models.MarginTrade(username=req.username, pair=req.pair, side=req.side, leverage=req.leverage or 10.0, price=req.price, amount=req.amount, pnl=0.0)
-    # demo pnl
-    t.pnl = round((t.amount * t.price) / max(1.0, t.leverage) * (0.02 if t.side == "sell" else -0.02), 4)
+async def margin_trade(req: SpotPlaceSchema, db: Session = Depends(get_db)):
+    t = models.MarginTrade(username=req.username, pair=req.pair, side=req.side, leverage= getattr(req, "leverage", 10.0), price=req.price, amount=req.amount, pnl=0.0)
+    # small demo pnl calc
+    t.pnl = round((t.amount * t.price) * (0.01 if t.side == "sell" else -0.01), 3)
     db.add(t); db.commit(); db.refresh(t)
-    await ws_manager.broadcast({"type":"trade", "market":"margin", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
-    return {"ok": True, "trade_id": t.id, "pnl": t.pnl}
+    try:
+        await ws_manager.broadcast_json({"type":"trade", "market":"margin", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
+    except Exception:
+        pass
+    return {"ok": True, "id": t.id, "pnl": t.pnl}
 
 @app.get("/margin/orders")
-def margin_orders(db: Session = Depends(get_db)):
-    rows = db.query(models.MarginTrade).order_by(models.MarginTrade.timestamp.desc()).limit(500).all()
-    return [dict(id=r.id, username=r.username, pair=r.pair, side=r.side, price=r.price, leverage=r.leverage, amount=r.amount, pnl=r.pnl, ts=str(r.timestamp)) for r in rows]
+async def margin_orders(db: Session = Depends(get_db)):
+    rows = db.query(models.MarginTrade).order_by(models.MarginTrade.timestamp.desc()).limit(200).all()
+    return [{"id": r.id, "user": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "pnl": r.pnl} for r in rows]
 
-# ---------------- Futures USDM ----------------
+# --------------------------
+# Futures USDM endpoints
+# --------------------------
 @app.post("/futures/usdm/trade")
-async def futures_usdm_trade(req: TradeReq, db: Session = Depends(get_db)):
-    # expects models.FuturesUsdmTrade
+async def futures_usdm_trade(req: FuturesPlaceSchema, db: Session = Depends(get_db)):
     t = models.FuturesUsdmTrade(username=req.username, pair=req.pair, side=req.side, leverage=req.leverage or 20.0, price=req.price, amount=req.amount, pnl=0.0)
     db.add(t); db.commit(); db.refresh(t)
-    await ws_manager.broadcast({"type":"trade", "market":"futures_usdm", "trade":{"id": t.id, "pair": t.pair, "price": t.price}})
-    return {"ok": True, "trade_id": t.id}
+    try:
+        await ws_manager.broadcast_json({"type":"trade", "market":"futures_usdm", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
+    except Exception:
+        pass
+    return {"ok": True, "id": t.id}
 
 @app.get("/futures/usdm/orders")
-def futures_usdm_orders(db: Session = Depends(get_db)):
-    rows = db.query(models.FuturesUsdmTrade).order_by(models.FuturesUsdmTrade.timestamp.desc()).limit(500).all()
-    return [dict(id=r.id, username=r.username, pair=r.pair, side=r.side, price=r.price, leverage=r.leverage, amount=r.amount, pnl=r.pnl, ts=str(r.timestamp)) for r in rows]
+async def futures_usdm_orders(db: Session = Depends(get_db)):
+    rows = db.query(models.FuturesUsdmTrade).order_by(models.FuturesUsdmTrade.timestamp.desc()).limit(200).all()
+    return [{"id": r.id, "user": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "leverage": r.leverage} for r in rows]
 
-# ---------------- Futures COINM ----------------
+# --------------------------
+# Futures COINM endpoints
+# --------------------------
 @app.post("/futures/coinm/trade")
-async def futures_coinm_trade(req: TradeReq, db: Session = Depends(get_db)):
+async def futures_coinm_trade(req: FuturesPlaceSchema, db: Session = Depends(get_db)):
     t = models.FuturesCoinmTrade(username=req.username, pair=req.pair, side=req.side, leverage=req.leverage or 20.0, price=req.price, amount=req.amount, pnl=0.0)
     db.add(t); db.commit(); db.refresh(t)
-    await ws_manager.broadcast({"type":"trade", "market":"futures_coinm", "trade":{"id": t.id, "pair": t.pair, "price": t.price}})
-    return {"ok": True, "trade_id": t.id}
+    try:
+        await ws_manager.broadcast_json({"type":"trade", "market":"futures_coinm", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
+    except Exception:
+        pass
+    return {"ok": True, "id": t.id}
 
 @app.get("/futures/coinm/orders")
-def futures_coinm_orders(db: Session = Depends(get_db)):
-    rows = db.query(models.FuturesCoinmTrade).order_by(models.FuturesCoinmTrade.timestamp.desc()).limit(500).all()
-    return [dict(id=r.id, username=r.username, pair=r.pair, side=r.side, price=r.price, leverage=r.leverage, amount=r.amount, pnl=r.pnl, ts=str(r.timestamp)) for r in rows]
+async def futures_coinm_orders(db: Session = Depends(get_db)):
+    rows = db.query(models.FuturesCoinmTrade).order_by(models.FuturesCoinmTrade.timestamp.desc()).limit(200).all()
+    return [{"id": r.id, "user": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "leverage": r.leverage} for r in rows]
 
-# ---------------- Options ----------------
+
+# --------------------------
+# Options endpoints
+# --------------------------
 @app.post("/options/trade")
-async def options_trade(req: OptionReq, db: Session = Depends(get_db)):
+async def options_trade(req: OptionsPlaceSchema, db: Session = Depends(get_db)):
     t = models.OptionsTrade(username=req.username, pair=req.pair, side=req.side, strike=req.strike, option_type=req.option_type, premium=req.premium, size=req.size)
     db.add(t); db.commit(); db.refresh(t)
-    await ws_manager.broadcast({"type":"trade", "market":"options", "trade":{"id": t.id, "pair": t.pair}})
-    return {"ok": True, "trade_id": t.id}
+    try:
+        await ws_manager.broadcast_json({"type":"trade", "market":"options", "trade": {"id": t.id, "pair": t.pair}})
+    except Exception:
+        pass
+    return {"ok": True, "id": t.id}
 
 @app.get("/options/orders")
-def options_orders(db: Session = Depends(get_db)):
-    rows = db.query(models.OptionsTrade).order_by(models.OptionsTrade.timestamp.desc()).limit(500).all()
-    return [dict(id=r.id, username=r.username, pair=r.pair, side=r.side, strike=r.strike, premium=r.premium, size=r.size, ts=str(r.timestamp)) for r in rows]
+async def options_orders(db: Session = Depends(get_db)):
+    rows = db.query(models.OptionsTrade).order_by(models.OptionsTrade.timestamp.desc()).limit(200).all()
+    return [{"id": r.id, "user": r.username, "pair": r.pair, "strike": r.strike, "premium": r.premium, "size": r.size} for r in rows]
 
-# ---------------- Ledger / PoR ----------------
+
+# --------------------------
+# Ledger / Proof-of-Reserves summary
+# --------------------------
 @app.get("/api/ledger/summary")
-def ledger_summary(db: Session = Depends(get_db)):
-    totals = {}
-    totals['spot_trades'] = db.query(models.SpotTrade).count()
-    totals['margin_trades'] = db.query(models.MarginTrade).count()
-    totals['futures_usdm'] = db.query(models.FuturesUsdmTrade).count()
-    totals['futures_coinm'] = db.query(models.FuturesCoinmTrade).count()
-    totals['options_trades'] = db.query(models.OptionsTrade).count()
+async def ledger_summary(db: Session = Depends(get_db)):
     users = db.query(models.User).all()
-    totals['users'] = len(users)
-    totals['total_inr'] = sum([u.balance_inr or 0 for u in users])
-    totals['total_usdt'] = sum([u.balance_usdt or 0 for u in users])
-    totals['proof_hash'] = str(round(totals['total_inr'] * (totals['total_usdt'] + 1), 5))
+    totals = {
+        "users": len(users),
+        "spot_trades": db.query(models.SpotTrade).count(),
+        "margin_trades": db.query(models.MarginTrade).count(),
+        "futures_usdm": db.query(models.FuturesUsdmTrade).count(),
+        "futures_coinm": db.query(models.FuturesCoinmTrade).count(),
+        "options_trades": db.query(models.OptionsTrade).count(),
+        "p2p_orders": db.query(models.P2POrder).count(),
+    }
+    totals["total_inr"] = sum([getattr(u, "balance_inr", 0) or 0 for u in users])
+    totals["total_usdt"] = sum([getattr(u, "balance_usdt", 0) or 0 for u in users])
+    # naive proof "hash"
+    totals["proof_hash"] = str(round(totals["total_inr"] * (totals["total_usdt"] + 1), 2))
     return totals
 
-# ---------------- Admin seed (configurable count) ----------------
+# --------------------------
+# ADMIN SEED (async, safe)
+# --------------------------
+SEED_DEFAULT = int(os.getenv("SEED_COUNT", "500"))
+
 @app.post("/admin/seed")
-def admin_seed(db: Session = Depends(get_db)):
-    # seed count can be tweaked with env: SEED_COUNT (default 500)
-    SEED_COUNT = int(os.getenv("SEED_COUNT", "500"))
-    # create users (if not exist)
-    existing = db.query(models.User).count()
-    if existing >= SEED_COUNT:
-        return {"ok": True, "message": "already seeded", "users": existing}
+async def admin_seed(count: Optional[int] = None):
+    """
+    Seeds demo users and trades.
+    - call with no body to seed SEED_DEFAULT users (default 500)
+    - returns {"ok": True, "seeded": N}
+    """
+    db = SessionLocal()
+    n = count or SEED_DEFAULT
+    try:
+        existing = db.query(models.User).count()
+        if existing >= n:
+            return {"ok": True, "seeded": existing, "note": "skipped: already seeded"}
+        pairs_spot = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "MATICUSDT"]
+        for i in range(n):
+            uname = f"demo_trader_{existing + i}"
+            u = models.User(
+                username=uname,
+                email=f"{uname}@blockflow.local",
+                password="demo",
+                balance_inr=random.randint(50000, 500000),
+                balance_usdt=round(random.uniform(100, 10000), 2)
+            )
+            db.add(u)
+        db.commit()
 
-    pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-    # create users
-    for i in range(SEED_COUNT):
-        u = models.User(username=f"demo_trader_{i}", email=f"demo{i}@blockflow.com", password="demo123", balance_inr=random.randint(50000, 500000), balance_usdt=round(random.uniform(1000, 10000), 2))
-        db.add(u)
-    db.commit()
+        # trades
+        # spot: ~1x per user
+        for _ in range(n):
+            t = models.SpotTrade(
+                username=f"demo_trader_{random.randint(0, n-1)}",
+                pair=random.choice(pairs_spot),
+                side=random.choice(["buy", "sell"]),
+                price=round(random.uniform(1000, 60000), 2),
+                amount=round(random.uniform(0.0005, 2.0), 6)
+            )
+            db.add(t)
 
-    # seed spot trades
-    for _ in range(int(SEED_COUNT * 1.0)):  # ~1x spot
-        t = models.SpotTrade(username=f"demo_trader_{random.randint(0, SEED_COUNT-1)}", pair=random.choice(pairs), side=random.choice(["buy","sell"]), price=round(random.uniform(1000, 60000), 2), amount=round(random.uniform(0.001, 1.0), 6))
-        db.add(t)
+        # futures usdm
+        for _ in range(int(n * 0.6)):
+            f = models.FuturesUsdmTrade(
+                username=f"demo_trader_{random.randint(0, n-1)}",
+                pair=random.choice(pairs_spot),
+                side=random.choice(["buy", "sell"]),
+                leverage=random.choice([5,10,20]),
+                price=round(random.uniform(1000, 60000), 2),
+                amount=round(random.uniform(0.01, 5.0), 4),
+            )
+            db.add(f)
 
-    # seed futures usdm
-    for _ in range(int(SEED_COUNT * 0.5)):
-        f = models.FuturesUsdmTrade(username=f"demo_trader_{random.randint(0, SEED_COUNT-1)}", pair=random.choice(pairs), side=random.choice(["buy","sell"]), leverage=random.choice([5,10,20]), price=round(random.uniform(1000,60000),2), amount=round(random.uniform(0.01,2.0),4))
-        db.add(f)
+        # futures coinm
+        for _ in range(int(n * 0.4)):
+            f = models.FuturesCoinmTrade(
+                username=f"demo_trader_{random.randint(0, n-1)}",
+                pair=random.choice(pairs_spot),
+                side=random.choice(["buy", "sell"]),
+                leverage=random.choice([2,5,10]),
+                price=round(random.uniform(1000, 60000), 2),
+                amount=round(random.uniform(0.01, 10.0), 4),
+            )
+            db.add(f)
 
-    # seed futures coinm
-    for _ in range(int(SEED_COUNT * 0.3)):
-        f = models.FuturesCoinmTrade(username=f"demo_trader_{random.randint(0, SEED_COUNT-1)}", pair=random.choice(pairs), side=random.choice(["buy","sell"]), leverage=random.choice([2,5,10]), price=round(random.uniform(1000,60000),2), amount=round(random.uniform(0.01,5.0),4))
-        db.add(f)
+        # margin
+        for _ in range(int(n * 0.5)):
+            m = models.MarginTrade(
+                username=f"demo_trader_{random.randint(0, n-1)}",
+                pair=random.choice(pairs_spot),
+                side=random.choice(["buy", "sell"]),
+                leverage=random.choice([3,5,10]),
+                price=round(random.uniform(1000, 60000), 2),
+                amount=round(random.uniform(0.01, 3.0), 4),
+                pnl=round(random.uniform(-100, 300), 2),
+            )
+            db.add(m)
 
-    # seed options
-    for _ in range(int(SEED_COUNT * 0.2)):
-        op = models.OptionsTrade(username=f"demo_trader_{random.randint(0, SEED_COUNT-1)}", pair=random.choice(pairs), side=random.choice(["buy","sell"]), strike=round(random.uniform(1000,60000),2), option_type=random.choice(["call","put"]), premium=round(random.uniform(1,5000),2), size=round(random.uniform(0.1,10),2))
-        db.add(op)
+        # options
+        for _ in range(int(n * 0.2)):
+            op = models.OptionsTrade(
+                username=f"demo_trader_{random.randint(0, n-1)}",
+                pair=random.choice(pairs_spot),
+                side=random.choice(["buy","sell"]),
+                strike=round(random.uniform(1000, 60000), 2),
+                option_type=random.choice(["call", "put"]),
+                premium=round(random.uniform(1, 1500), 2),
+                size=round(random.uniform(0.1, 10), 2),
+            )
+            db.add(op)
 
-    db.commit()
-    # broadcast a seed completed message to websocket clients
-try:
-    loop = asyncio.get_running_loop()
-    loop.create_task(ws_manager.broadcast({"type": "seed_completed", "users": SEED_COUNT}))
-except RuntimeError:
-    asyncio.run(ws_manager.broadcast({"type": "seed_completed", "users": SEED_COUNT}))
-    return {"ok": True, "seeded_users": SEED_COUNT}
+        # p2p orders
+        for _ in range(int(n * 0.6)):
+            p = models.P2POrder(
+                username=f"demo_trader_{random.randint(0, n-1)}",
+                asset=random.choice(["USDT","BTC","ETH"]),
+                price=round(random.uniform(70000, 4500000)/100.0, 2) * 100,  # some INR-like price
+                amount=round(random.uniform(0.001, 10.0), 4),
+                payment_method=random.choice(["UPI","Bank Transfer"]),
+                status="active"
+            )
+            db.add(p)
 
-# ---------------- WebSocket endpoint ----------------
+        db.commit()
+
+        # broadcast seed completion (best-effort, inside running loop)
+        try:
+            await ws_manager.broadcast_json({"type":"seed_completed", "users_seeded": n})
+        except RuntimeError:
+            # if event loop not running for some reason, just skip broadcast
+            pass
+        except Exception:
+            pass
+
+        return {"ok": True, "seeded": n}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+# --------------------------
+# WebSocket endpoint
+# --------------------------
 @app.websocket("/ws/market")
 async def ws_market(ws: WebSocket):
     await ws_manager.connect(ws)
     try:
+        # send welcome snapshot
+        await ws.send_text(json.dumps({"type":"welcome", "time": datetime.utcnow().isoformat()}))
         while True:
-            # keep connection open, accept pings/pongs
-            data = await ws.receive_text()
-            # optional client messages are logged and acknowledged
+            # keep connection alive; accept pings/echoes
+            msg = await ws.receive_text()
+            # echo back small ack
             try:
-                payload = json.loads(data)
+                body = json.loads(msg)
             except Exception:
-                payload = {"raw": data}
-            # echo ack
-            await ws.send_text(json.dumps({"ack": payload}))
+                body = {"raw": msg}
+            # acknowledge
+            await ws.send_text(json.dumps({"ack": body}))
     except WebSocketDisconnect:
-        ws_manager.disconnect(ws)
+        await ws_manager.disconnect(ws)
+    except Exception:
+        # ensure removal on error
+        await ws_manager.disconnect(ws)
 
-# ---------------- periodic broadcaster (market snapshot) ----------------
-async def periodic_broadcast():
+# --------------------------
+# Periodic market snapshot broadcaster (keeps UI alive)
+# --------------------------
+async def market_snapshot_loop():
+    await asyncio.sleep(2)  # small delay for startup
     while True:
-        await asyncio.sleep(5)
         try:
             db = SessionLocal()
-            latest_spot = db.query(models.SpotTrade).order_by(models.SpotTrade.timestamp.desc()).limit(5).all()
-            snapshot = [{"id": t.id, "pair": t.pair, "price": t.price, "amount": t.amount} for t in latest_spot]
-            await ws_manager.broadcast({"type":"market_snapshot", "spot_recent": snapshot, "time": datetime.utcnow().isoformat()})
+            # fetch recent spot trades (last 5)
+            recent_spot = db.query(models.SpotTrade).order_by(models.SpotTrade.timestamp.desc()).limit(6).all()
+            recent_f_usdm = db.query(models.FuturesUsdmTrade).order_by(models.FuturesUsdmTrade.timestamp.desc()).limit(4).all()
+            recent_f_coinm = db.query(models.FuturesCoinmTrade).order_by(models.FuturesCoinmTrade.timestamp.desc()).limit(4).all()
+
+            payload = {
+                "type":"market_snapshot",
+                "time": datetime.utcnow().isoformat(),
+                "spot": [{"id": r.id, "pair": r.pair, "price": r.price, "amount": r.amount} for r in recent_spot],
+                "futures_usdm": [{"id": r.id, "pair": r.pair, "price": r.price} for r in recent_f_usdm],
+                "futures_coinm": [{"id": r.id, "pair": r.pair, "price": r.price} for r in recent_f_coinm],
+            }
+            await ws_manager.broadcast_json(payload)
         except Exception:
+            # swallow and continue
             pass
         finally:
             try:
                 db.close()
             except Exception:
                 pass
+        await asyncio.sleep(5)  # every 5 seconds
 
 @app.on_event("startup")
 async def startup_event():
-    # start periodic broadcaster but do NOT start uvicorn.run here (Render runs server)
-    asyncio.create_task(periodic_broadcast())
+    # start periodic broadcaster in background
+    try:
+        asyncio.create_task(market_snapshot_loop())
+    except Exception:
+        # if even create_task fails (unlikely in FastAPI), ignore
+        pass
+    print("🚀 Blockflow investor-demo backend started (Render-safe)")
+
+# --------------------------
+# End file
+# --------------------------
+
 
 # ---------------- end file ----------------
 
