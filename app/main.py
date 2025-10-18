@@ -787,6 +787,8 @@ async def startup_tasks():
  # ==============================
 # 🟢 KEEP-ALIVE PATCH (Render backend auto sleep fix)
 # ==============================
+import sys, os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import threading
 import time
