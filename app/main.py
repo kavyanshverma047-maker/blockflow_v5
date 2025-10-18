@@ -784,6 +784,31 @@ async def startup_tasks():
         print(f"⚠️ Startup seeding error: {e}")
     
     print("🚀 Blockflow backend ready!")
+ # ==============================
+# 🟢 KEEP-ALIVE PATCH (Render backend auto sleep fix)
+# ==============================
+
+import threading
+import time
+import requests
+
+def keep_alive():
+    """
+    This function pings your own Render URL every 5 minutes
+    so the server never goes to sleep.
+    """
+    while True:
+        try:
+            url = "https://blockflow-v5-1.onrender.com"  # apna Render backend URL yahan daal
+            r = requests.get(url, timeout=10)
+            print(f"[KeepAlive] Pinged backend — status {r.status_code}")
+        except Exception as e:
+            print(f"[KeepAlive] Error pinging backend: {e}")
+        time.sleep(300)  # ping every 5 minutes
+
+# Run it in background
+threading.Thread(target=keep_alive, daemon=True).start()
+
 
 # --------------------------
 
