@@ -1,6 +1,7 @@
 # app/metrics_service.py
 from fastapi import APIRouter
-from simulator import metrics_data
+from app.simulator import metrics_data
+
 
 router = APIRouter(prefix="/api/metrics", tags=["Metrics"])
 
