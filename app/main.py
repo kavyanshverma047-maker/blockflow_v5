@@ -29,6 +29,9 @@ from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
 from app.simulator import simulate_metrics
 from app.liquidity_engine import simulate_liquidity_loop, get_pool_state
+from app.ledger_service import log_trade, get_recent_trades
+from app.alerts_service import simulate_alerts
+
 
 # Try import models from app.models (preferred) else models
 try:
@@ -86,6 +89,11 @@ def api_liquidity():
         return {"status": "ok", "data": get_pool_state()}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+@app.get("/api/alerts")
+def get_alerts():
+    """Return dynamic exchange/compliance alerts."""
+    return {"status": "ok", "data": simulate_alerts()}
+
 
 app.include_router(metrics_router)
 app.include_router(compliance_router)
