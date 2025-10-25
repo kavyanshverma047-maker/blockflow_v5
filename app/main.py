@@ -28,8 +28,9 @@ from sqlalchemy.inspection import inspect
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
 from app.simulator import simulate_metrics
-from liquidity_engine import simulate_liquidity_loop, get_pool_state
-from ledger_service import log_trade, get_recent_trades
+from app.liquidity_engine import simulate_liquidity_loop, get_pool_state
+from app.ledger_service import log_trade, get_recent_trades
+
 from alerts_service import simulate_alerts
 
 
