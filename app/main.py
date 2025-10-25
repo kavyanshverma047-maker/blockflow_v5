@@ -27,7 +27,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.inspection import inspect
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
-from simulator import simulate_metrics, metrics_data
+from app.simulator import simulate_metrics
 
 
 # Try import models from app.models (preferred) else models
