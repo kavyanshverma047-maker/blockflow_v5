@@ -27,6 +27,8 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.inspection import inspect
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
+from app.simulator import simulate_metrics, metrics_data
+
 
 # Try import models from app.models (preferred) else models
 try:
@@ -74,6 +76,9 @@ except Exception as e:
 # --------------------------
 app = FastAPI(title="Blockflow Exchange (Investor Demo - Fixed)", version="5.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+@app.on_event("startup")
+async def start_background_tasks():
+    asyncio.create_task(simulate_metrics())
 
 app.include_router(metrics_router)
 app.include_router(compliance_router)
