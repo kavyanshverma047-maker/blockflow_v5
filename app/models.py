@@ -22,13 +22,7 @@ class User(Base):
 
     refresh_tokens = relationship("RefreshToken", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user")
-<<<<<<< HEAD
 
-
-    
-
-=======
->>>>>>> 8d81061 (Fix: added missing func import for SQLAlchemy timestamp columns)
 # =========================
 # P2P ORDERS
 # =========================
@@ -115,14 +109,6 @@ class OptionsTrade(Base):
     premium = Column(Float)
     size = Column(Float)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
-<<<<<<< HEAD
-
-
-
-
-=======
-    
->>>>>>> 8d81061 (Fix: added missing func import for SQLAlchemy timestamp columns)
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
     id = Column(Integer, primary_key=True, index=True)
