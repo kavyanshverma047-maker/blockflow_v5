@@ -7,13 +7,16 @@ from app.database import Base
 # =========================
 class User(Base):
     __tablename__ = "users"
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True)
+    email = Column(String, unique=True, index=True)
     password = Column(String)
-    balance_inr = Column(Float, default=100000.0)
-    balance_usdt = Column(Float, default=1000.0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())    refresh_tokens = relationship("RefreshToken", back_populates="user")
+    balance_usdt = Column(Float, default=100000.0)
+    balance_inr = Column(Float, default=10000.0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    refresh_tokens = relationship("RefreshToken", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user")
 
 
