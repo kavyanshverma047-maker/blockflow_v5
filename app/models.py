@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, func
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
 from app.database import Base
-
 # =========================
 # USER MODEL
 # =========================
@@ -100,4 +101,36 @@ class OptionsTrade(Base):
     premium = Column(Float)
     size = Column(Float)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    tokens = relationship("RefreshToken", back_populates="user")
+    api_keys = relationship("APIKey", back_populates="user")
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String(255), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    expires_at = Column(DateTime, nullable=False)
+
+    user = relationship("User", back_populates="tokens")
+
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(255), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    active = Column(Boolean, default=True)
+
+    user = relationship("User", back_populates="api_keys")
 
