@@ -33,6 +33,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # ✅ Corrected imports (all prefixed with `app.`)
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
+from app.auth_service import router as auth_router
+
 from app.simulator import simulate_metrics
 from app.liquidity_engine import simulate_liquidity_loop, get_pool_state
 from app.ledger_service import log_trade, get_recent_trades
@@ -104,6 +106,8 @@ def get_alerts():
 
 app.include_router(metrics_router)
 app.include_router(compliance_router)
+app.include_router(auth_router)
+
 # dependency
 def get_db():
     db = SessionLocal()
