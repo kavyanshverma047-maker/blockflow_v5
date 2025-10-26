@@ -13,7 +13,11 @@ class User(Base):
     password = Column(String)
     balance_inr = Column(Float, default=100000.0)
     balance_usdt = Column(Float, default=1000.0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())    refresh_tokens = relationship("RefreshToken", back_populates="user")
+    api_keys = relationship("APIKey", back_populates="user")
+
+
+    
 
 # =========================
 # P2P ORDERS
