@@ -17,11 +17,12 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     password = Column(String)
     balance_usdt = Column(Float, default=100000.0)
-    balance_inr = Column(Float, default=10000.0)
+    balance_inr = Column(Float, default=100000.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    refresh_tokens = relationship("RefreshToken", back_populates="user")
-    api_keys = relationship("APIKey", back_populates="user")
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
+
 
 # =========================
 # P2P ORDERS
@@ -111,21 +112,22 @@ class OptionsTrade(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
+
     id = Column(Integer, primary_key=True, index=True)
-    token = Column(String(255), unique=True, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    token = Column(String, unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     expires_at = Column(DateTime, nullable=False)
 
-    user = relationship("User", back_populates="tokens")
+    user = relationship("User", back_populates="refresh_tokens")  # ✅ FIXED name
 
 
-class APIKey(Base):
+class ApiKey(Base):
     __tablename__ = "api_keys"
+
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String(255), unique=True, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    key = Column(String, unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     active = Column(Boolean, default=True)
 
-    user = relationship("User", back_populates="api_keys")
-
+    user = relationship("User", back_populates="api_keys")  # ✅ consistent
