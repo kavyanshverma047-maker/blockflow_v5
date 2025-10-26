@@ -101,7 +101,7 @@ class OptionsTrade(Base):
     premium = Column(Float)
     size = Column(Float)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    class User(Base):
+class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
