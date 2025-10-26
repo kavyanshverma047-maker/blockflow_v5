@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 
 from app.db import get_db
-from app.models import User, RefreshToken, ApiKey
+from app.models import User, RefreshToken, APIKey
+
 from app.utils.security import (
     hash_password, verify_password, create_access_token, decode_access_token,
     generate_refresh_token, hash_token, generate_api_key
