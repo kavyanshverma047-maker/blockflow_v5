@@ -1,9 +1,9 @@
 from datetime import datetime
-<<<<<<< HEAD
+
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Float
-=======
+
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Float, func
->>>>>>> 8d81061 (Fix: added missing func import for SQLAlchemy timestamp columns)
+
 from sqlalchemy.orm import relationship
 from app.database import Base
 # =========================
