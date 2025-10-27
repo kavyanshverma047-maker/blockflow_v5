@@ -5,7 +5,8 @@ from typing import Optional, List
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.main import get_db
+
 from app.wallet_service import WalletService
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
