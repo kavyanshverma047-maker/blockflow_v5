@@ -22,6 +22,7 @@ class User(Base):
 
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
+    ledger_entries = relationship("LedgerEntry", back_populates="user", cascade="all, delete-orphan")
 
 
 # =========================
@@ -131,3 +132,18 @@ class ApiKey(Base):
     active = Column(Boolean, default=True)
 
     user = relationship("User", back_populates="api_keys")  # ✅ consistent
+
+# -------- Ledger entries (wallet / ledger) --------
+class LedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    asset = Column(String, nullable=False)               # e.g. "BTC", "ETH", "USDT"
+    amount = Column(Float, nullable=False)
+    type = Column(String, nullable=False)                # e.g. "deposit","withdrawal","trade","fee"
+    reference = Column(String, nullable=True)            # optional external reference / txid
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="ledger_entries")
+
