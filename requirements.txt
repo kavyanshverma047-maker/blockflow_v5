@@ -11,4 +11,5 @@ passlib[bcrypt]==1.7.4
 pyjwt==2.9.0
 requests==2.32.3
 email-validator
-psycopg2-binary
+psycopg2-binary>=2.9
+
