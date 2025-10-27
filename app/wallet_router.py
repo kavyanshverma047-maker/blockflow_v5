@@ -5,7 +5,7 @@ from typing import Optional, List
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-from app.main import get_db
+from app.dependencies import get_db
 
 from app.wallet_service import WalletService
 
