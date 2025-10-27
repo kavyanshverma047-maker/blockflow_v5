@@ -147,7 +147,8 @@ class LedgerEntry(Base):
     amount = Column(Numeric(24, 8), nullable=False)       # Positive for credit, negative for debit
     balance_after = Column(Numeric(24, 8), nullable=True) # store balance after txn
     type = Column(String, nullable=False)                # "deposit","withdrawal","trade","fee","transfer"
-    metadata = Column(JSON, nullable=True)
+    meta = Column(JSON, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="ledger_entries")
