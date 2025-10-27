@@ -39,7 +39,7 @@ def create_ledger_entry(
         asset=asset,
         amount=float(amount),
         type=entry_type,
-        metadata=metadata or {},
+        meta=metadata or {},
         created_at=datetime.utcnow(),
     )
     db.add(entry)
