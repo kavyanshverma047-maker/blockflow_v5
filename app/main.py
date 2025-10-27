@@ -40,9 +40,16 @@ from app.liquidity_engine import simulate_liquidity_loop, get_pool_state
 from app.ledger_service import log_trade, get_recent_trades
 from app.alerts_service import simulate_alerts
 from app.wallet_router import router as wallet_router
+from app.auth_service import router as auth_router
 
+app = FastAPI(title="Blockflow Backend")
+
+app.include_router(auth_router)
 app.include_router(wallet_router)
 
+@app.get("/")
+def root():
+    return {"message": "Blockflow backend ready!"}
 
 
 # Try import models from app.models (preferred) else models
