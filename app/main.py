@@ -59,6 +59,8 @@ except Exception:
     import models
 
 from app.models import User, P2POrder, SpotTrade, MarginTrade, FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade
+# ✅ Database dependency
+from app.dependencies import get_db
 
 # --------------------------
 # End of main.py
