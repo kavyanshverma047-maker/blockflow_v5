@@ -133,17 +133,23 @@ class ApiKey(Base):
 
     user = relationship("User", back_populates="api_keys")  # ✅ consistent
 
-# -------- Ledger entries (wallet / ledger) --------
+# =========================
+# LEDGER ENTRIES (Wallet / Ledger)
+# =========================
+from sqlalchemy import JSON, Numeric
+
 class LedgerEntry(Base):
     __tablename__ = "ledger_entries"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     asset = Column(String, nullable=False)               # e.g. "BTC", "ETH", "USDT"
-    amount = Column(Float, nullable=False)
-    type = Column(String, nullable=False)                # e.g. "deposit","withdrawal","trade","fee"
-    reference = Column(String, nullable=True)            # optional external reference / txid
+    amount = Column(Numeric(24, 8), nullable=False)       # Positive for credit, negative for debit
+    balance_after = Column(Numeric(24, 8), nullable=True) # store balance after txn
+    type = Column(String, nullable=False)                # "deposit","withdrawal","trade","fee","transfer"
+    metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="ledger_entries")
+
 
