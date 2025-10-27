@@ -4,7 +4,8 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 
-from app.main import get_db
+from app.dependencies import get_db
+
 
 from app.models import User, RefreshToken, ApiKey
 
