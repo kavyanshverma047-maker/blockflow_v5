@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models import LedgerEntry
+from app.models import LedgerEntry, User
 from typing import List
 
 
