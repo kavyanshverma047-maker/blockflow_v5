@@ -118,13 +118,6 @@ app.include_router(metrics_router)
 app.include_router(compliance_router)
 app.include_router(auth_router)
 
-# dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # --------------------------
 # Helper: Model to Dict
