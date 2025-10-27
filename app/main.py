@@ -39,6 +39,9 @@ from app.simulator import simulate_metrics
 from app.liquidity_engine import simulate_liquidity_loop, get_pool_state
 from app.ledger_service import log_trade, get_recent_trades
 from app.alerts_service import simulate_alerts
+from app.wallet_router import router as wallet_router
+
+app.include_router(wallet_router)
 
 
 
