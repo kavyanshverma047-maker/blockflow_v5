@@ -1,6 +1,8 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+from app.db import get_db
+
 
 # Fetch DATABASE_URL from .env or Render environment
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./blockflow.db")
