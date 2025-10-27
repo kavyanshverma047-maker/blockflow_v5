@@ -1,32 +1,34 @@
 # app/wallet_router.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, condecimal
 from typing import Optional, List
 from decimal import Decimal
+from sqlalchemy.orm import Session
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from .dependencies import get_async_session  # you may already have a dependency util; adjust path if needed
-from .wallet_service import WalletService
+from app.wallet_service import WalletService
+from app.main import get_db
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
 service = WalletService()
+
 
 # Request schemas
 class AmountRequest(BaseModel):
     user_id: int = Field(..., example=1)
     asset: str = Field(..., example="USDT")
     amount: condecimal(gt=0, decimal_places=8) = Field(..., example="10.5")
-    metadata: Optional[dict] = None
+    meta: Optional[dict] = None
+
 
 class TransferRequest(BaseModel):
     from_user_id: int = Field(..., example=1)
     to_user_id: int = Field(..., example=2)
     asset: str = Field(..., example="USDT")
     amount: condecimal(gt=0, decimal_places=8) = Field(..., example="1.0")
-    metadata: Optional[dict] = None
+    meta: Optional[dict] = None
 
-# Response schemas (keep lightweight)
+
+# Response schemas
 class LedgerEntryOut(BaseModel):
     id: int
     user_id: int
@@ -34,57 +36,61 @@ class LedgerEntryOut(BaseModel):
     amount: Decimal
     balance_after: Optional[Decimal] = None
     type: Optional[str] = None
-    metadata: Optional[dict] = None
+    meta: Optional[dict] = None
     created_at: Optional[str] = None
 
     class Config:
         orm_mode = True
 
+
 @router.post("/deposit", response_model=LedgerEntryOut)
-async def deposit(req: AmountRequest, session: AsyncSession = Depends(get_async_session)):
+def deposit(req: AmountRequest, db: Session = Depends(get_db)):
     try:
-        entry = await service.deposit(session=session, user_id=req.user_id, asset=req.asset, amount=Decimal(req.amount), metadata=req.metadata)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        entry = service.deposit(db, req.user_id, req.asset, Decimal(req.amount), req.meta)
+        db.commit()
+        db.refresh(entry)
+        return entry
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="deposit failed")
-    return entry
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/withdraw", response_model=LedgerEntryOut)
-async def withdraw(req: AmountRequest, session: AsyncSession = Depends(get_async_session)):
+def withdraw(req: AmountRequest, db: Session = Depends(get_db)):
     try:
-        entry = await service.withdraw(session=session, user_id=req.user_id, asset=req.asset, amount=Decimal(req.amount), metadata=req.metadata)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="withdraw failed")
-    return entry
+        entry = service.withdraw(db, req.user_id, req.asset, Decimal(req.amount), req.meta)
+        db.commit()
+        db.refresh(entry)
+        return entry
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/transfer")
-async def transfer(req: TransferRequest, session: AsyncSession = Depends(get_async_session)):
+def transfer(req: TransferRequest, db: Session = Depends(get_db)):
     try:
-        result = await service.transfer(session=session, from_user_id=req.from_user_id, to_user_id=req.to_user_id, asset=req.asset, amount=Decimal(req.amount), metadata=req.metadata)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="transfer failed")
-    # result shape depends on ledger_service.transfer_between_users; return minimally
-    return {"status": "ok", "detail": "transfer completed", "result": result}
+        result = service.transfer(db, req.from_user_id, req.to_user_id, req.asset, Decimal(req.amount), req.meta)
+        db.commit()
+        return {"status": "success", "result": result}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/ledger/{user_id}", response_model=List[LedgerEntryOut])
-async def get_ledger(user_id: int, limit: int = 100, offset: int = 0, session: AsyncSession = Depends(get_async_session)):
+def get_ledger(user_id: int, db: Session = Depends(get_db)):
     try:
-        entries = await service.get_ledger(session=session, user_id=user_id, limit=limit, offset=offset)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="could not fetch ledger")
-    return entries
+        entries = service.get_ledger(db, user_id)
+        return entries
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/balance/{user_id}/{asset}")
-async def get_balance(user_id: int, asset: str, session: AsyncSession = Depends(get_async_session)):
+def get_balance(user_id: int, asset: str, db: Session = Depends(get_db)):
     try:
-        bal = await service.get_balance(session=session, user_id=user_id, asset=asset)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="could not fetch balance")
-    return {"user_id": user_id, "asset": asset, "balance": str(bal)}
-
-
+        balance = service.get_balance(db, user_id, asset)
+        return {"user_id": user_id, "asset": asset, "balance": str(balance)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
