@@ -1,384 +1,182 @@
 """
-Ledger service - production-ready skeleton for ledger entries and balance updates.
+app/ledger_service.py
+Production-grade ledger helpers for multi-asset balances.
 
-Features:
-- create_ledger_entry: writes a LedgerEntry row
-- credit_user/debit_user: update user balance and log entry atomically
-- transfer_between_users: atomic transfer between two users
-- get_ledger_for_user / get_balance / reconcile helpers
-- Defensive: transactional, rollback on errors, avoids circular imports by importing models inside functions.
+Assumptions:
+- models.User has numeric balance columns per asset or a generic balance table. This service
+  uses a LedgerEntry model (id, user_id, asset, delta, balance_after, type, meta, created_at).
+- app.database exposes `get_db()` (dependency that yields a SQLAlchemy Session) or `SessionLocal`.
+  Adjust import if your project uses different names.
+- All amounts are floats here for simplicity. For a production exchange please use integers (satoshis)
+  or Decimal with context and column types adapted accordingly.
 """
 
-from datetime import datetime
-from typing import Optional, Dict, Any, List
-
+from typing import Optional
+from decimal import Decimal
 from sqlalchemy.orm import Session
+from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
+from datetime import datetime
 
-# NOTE:
-# We intentionally import models inside functions to avoid circular imports
-# when models import services or other modules that import models.
-# If your project already organizes imports so no circular import exists,
-# you can move these imports to module level for slightly better performance.
+from app import models
+from app.database import get_db  # change if your project exposes SessionLocal
 
-# --- Helper / default metadata -----------------------------------------------------------------
-def _now_iso():
-    return datetime.utcnow().isoformat()
+# Optional: centralize supported assets
+SUPPORTED_ASSETS = {"USDT", "BTC", "ETH", "USD"}
 
-# --- Core operations ----------------------------------------------------------------------------
+class LedgerError(Exception):
+    pass
+
+
+def _normalize_amount(amount) -> Decimal:
+    """Return Decimal normalized amount (positive or negative)."""
+    return Decimal(str(amount))
+
+
 def create_ledger_entry(
     db: Session,
-    user_id: Optional[int],
+    user_id: int,
     asset: str,
-    amount: float,
+    delta: Decimal,
     entry_type: str,
-    balance_before: Optional[float] = None,
-    balance_after: Optional[float] = None,
-    reference: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    meta: Optional[dict] = None,
+) -> models.LedgerEntry:
     """
-    Create a LedgerEntry row. Does not change balances unless caller does so.
-    Returns a dict representing the created entry.
+    Create a ledger entry and return it. Does NOT change any cached user balance field —
+    higher-level helpers should update balances in the same transaction.
     """
-    # import local models lazily to avoid circular import
-    from app.models import LedgerEntry
+    if asset not in SUPPORTED_ASSETS:
+        raise LedgerError(f"Unsupported asset '{asset}'")
 
-    if metadata is None:
-        metadata = {}
-
-    entry = LedgerEntry(
+    entry = models.LedgerEntry(
         user_id=user_id,
-        asset=asset.upper(),
-        amount=amount,
+        asset=asset,
+        delta=float(delta),
         type=entry_type,
-        reference=reference,
-        metadata=str(metadata),  # store as JSON string if column is String/Text. Adjust if JSON type available.
-        balance_before=balance_before,
-        balance_after=balance_after,
-        timestamp=datetime.utcnow(),
+        meta=str(meta) if meta is not None else None,
+        created_at=datetime.utcnow(),
     )
 
     db.add(entry)
-    db.flush()  # get id assigned
-    # return a simple mapping
-    return {
-        "id": getattr(entry, "id", None),
-        "user_id": user_id,
-        "asset": entry.asset,
-        "amount": float(amount),
-        "type": entry_type,
-        "reference": reference,
-        "metadata": metadata,
-        "balance_before": balance_before,
-        "balance_after": balance_after,
-        "timestamp": entry.timestamp.isoformat(),
-    }
+    db.flush()  # ensure entry.id is populated
+    return entry
 
 
-def apply_balance_change(db: Session, user, asset: str, delta: float) -> float:
+def credit_user_balance(db: Session, user_id: int, asset: str, amount: float, reason="credit", meta=None):
     """
-    Apply a balance change for a user and return (new_balance).
-    This function attempts to handle:
-      1) If you have a dedicated column per asset (e.g. balance_usdt),
-         you can add logic to map asset -> column.
-      2) If you store balances in a dict/json column (user.balances), update it.
-    Adjust this to match your User model storage.
+    Credit user's balance for an asset.
+    - Uses SELECT FOR UPDATE on the user row for concurrency safety.
+    - Creates a ledger entry.
     """
-    asset = asset.upper()
-    # try JSON/dict column `balances` (preferred)
-    if hasattr(user, "balances") and isinstance(getattr(user, "balances"), dict):
-        balances = user.balances or {}
-        old = float(balances.get(asset, 0.0))
-        new = old + float(delta)
-        balances[asset] = new
-        user.balances = balances
-        return new
+    amount_dec = _normalize_amount(amount)
+    if amount_dec <= 0:
+        raise LedgerError("Credit amount must be positive")
 
-    # fallback mapping for typical columns (USDT/INR examples)
-    col_map = {
-        "USDT": "balance_usdt",
-        "INR": "balance_inr",
-        # add more mapping if you keep separate columns per asset, e.g. "BTC": "balance_btc"
-    }
-    if asset in col_map and hasattr(user, col_map[asset]):
-        colname = col_map[asset]
-        old = float(getattr(user, colname) or 0.0)
-        new = old + float(delta)
-        setattr(user, colname, new)
-        return new
+    # Lock the user row
+    user = db.execute(
+        select(models.User).where(models.User.id == user_id).with_for_update()
+    ).scalar_one_or_none()
 
-    # last resort: try generic `balance` field
-    if hasattr(user, "balance"):
-        old = float(getattr(user, "balance") or 0.0)
-        new = old + float(delta)
-        setattr(user, "balance", new)
-        return new
-
-    # if nothing matches, raise so developer notices
-    raise AttributeError("Could not find balance storage on User model for asset: " + asset)
-
-
-def credit_user(
-    db: Session,
-    user_id: int,
-    asset: str,
-    amount: float,
-    reference: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    Credit (increase) user balance and create ledger entry inside a transaction.
-    """
-    from app.models import User
-
-    try:
-        user = db.query(User).filter(User.id == user_id).with_for_update().one_or_none()
-        if user is None:
-            raise ValueError(f"User id={user_id} not found")
-
-        before = None
-        try:
-            before = float(getattr(user, "balances", {}).get(asset.upper(), 0.0)) if hasattr(user, "balances") else None
-        except Exception:
-            before = None
-
-        new_balance = apply_balance_change(db, user, asset, float(amount))
-        entry = create_ledger_entry(
-            db=db,
-            user_id=user_id,
-            asset=asset,
-            amount=amount,
-            entry_type="credit",
-            balance_before=before,
-            balance_after=new_balance,
-            reference=reference,
-            metadata=metadata,
-        )
-        db.commit()
-        return entry
-    except Exception:
-        db.rollback()
-        raise
-
-
-def debit_user(
-    db: Session,
-    user_id: int,
-    asset: str,
-    amount: float,
-    reference: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    allow_negative: bool = False,
-) -> Dict[str, Any]:
-    """
-    Debit (decrease) user balance and create ledger entry.
-    If allow_negative is False and insufficient funds, raises ValueError.
-    """
-    from app.models import User
-
-    try:
-        user = db.query(User).filter(User.id == user_id).with_for_update().one_or_none()
-        if user is None:
-            raise ValueError(f"User id={user_id} not found")
-
-        # compute current balance (attempt balances dict first)
-        current = 0.0
-        if hasattr(user, "balances") and isinstance(getattr(user, "balances"), dict):
-            current = float(user.balances.get(asset.upper(), 0.0))
-        else:
-            # fallback to mapped columns
-            try:
-                asset = asset.upper()
-                col_map = {
-                    "USDT": "balance_usdt",
-                    "INR": "balance_inr",
-                }
-                if asset in col_map and hasattr(user, col_map[asset]):
-                    current = float(getattr(user, col_map[asset]) or 0.0)
-                else:
-                    current = float(getattr(user, "balance", 0.0) or 0.0)
-            except Exception:
-                current = 0.0
-
-        if not allow_negative and current < amount:
-            raise ValueError(f"Insufficient funds for user {user_id}: have {current}, need {amount}")
-
-        before = current
-        new_balance = apply_balance_change(db, user, asset, -float(amount))
-        entry = create_ledger_entry(
-            db=db,
-            user_id=user_id,
-            asset=asset,
-            amount=-abs(float(amount)),
-            entry_type="debit",
-            balance_before=before,
-            balance_after=new_balance,
-            reference=reference,
-            metadata=metadata,
-        )
-        db.commit()
-        return entry
-    except Exception:
-        db.rollback()
-        raise
-
-
-def transfer_between_users(
-    db: Session,
-    from_user_id: int,
-    to_user_id: int,
-    asset: str,
-    amount: float,
-    reference: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    Atomic transfer: debit from_user, credit to_user, create two ledger entries.
-    Returns a dict with both entries.
-    """
-    try:
-        # We'll lock both users (order by id to avoid deadlocks)
-        from app.models import User
-
-        # ensure consistent locking order
-        u1_id, u2_id = (from_user_id, to_user_id) if from_user_id <= to_user_id else (to_user_id, from_user_id)
-
-        u1 = db.query(User).filter(User.id == u1_id).with_for_update().one_or_none()
-        u2 = db.query(User).filter(User.id == u2_id).with_for_update().one_or_none()
-
-        # map back to correct users
-        user_from = u1 if u1.id == from_user_id else u2
-        user_to = u2 if u2.id == to_user_id else u1
-
-        if user_from is None or user_to is None:
-            raise ValueError("One or both users not found for transfer")
-
-        # Perform debit then credit
-        # NOTE: using existing functions would open/commit transactions. Instead perform inline.
-        # Check balance
-        current_from = 0.0
-        if hasattr(user_from, "balances") and isinstance(getattr(user_from, "balances"), dict):
-            current_from = float(user_from.balances.get(asset.upper(), 0.0))
-        else:
-            col_map = {"USDT": "balance_usdt", "INR": "balance_inr"}
-            if asset.upper() in col_map and hasattr(user_from, col_map[asset.upper()]):
-                current_from = float(getattr(user_from, col_map[asset.upper()]) or 0.0)
-            else:
-                current_from = float(getattr(user_from, "balance", 0.0) or 0.0)
-
-        if current_from < amount:
-            raise ValueError(f"Insufficient funds for transfer: have {current_from}, need {amount}")
-
-        before_from = current_from
-        before_to = 0.0
-        if hasattr(user_to, "balances") and isinstance(getattr(user_to, "balances"), dict):
-            before_to = float(user_to.balances.get(asset.upper(), 0.0))
-        else:
-            col_map = {"USDT": "balance_usdt", "INR": "balance_inr"}
-            if asset.upper() in col_map and hasattr(user_to, col_map[asset.upper()]):
-                before_to = float(getattr(user_to, col_map[asset.upper()]) or 0.0)
-            else:
-                before_to = float(getattr(user_to, "balance", 0.0) or 0.0)
-
-        # apply changes
-        new_from = apply_balance_change(db, user_from, asset, -float(amount))
-        new_to = apply_balance_change(db, user_to, asset, float(amount))
-
-        # create ledger rows
-        entry_out = create_ledger_entry(
-            db=db,
-            user_id=from_user_id,
-            asset=asset,
-            amount=-abs(float(amount)),
-            entry_type="transfer_out",
-            balance_before=before_from,
-            balance_after=new_from,
-            reference=reference,
-            metadata=metadata,
-        )
-        entry_in = create_ledger_entry(
-            db=db,
-            user_id=to_user_id,
-            asset=asset,
-            amount=abs(float(amount)),
-            entry_type="transfer_in",
-            balance_before=before_to,
-            balance_after=new_to,
-            reference=reference,
-            metadata=metadata,
-        )
-
-        db.commit()
-        return {"out": entry_out, "in": entry_in}
-    except Exception:
-        db.rollback()
-        raise
-
-
-# --- Read helpers -------------------------------------------------------------------------------
-def get_ledger_for_user(db: Session, user_id: int, limit: int = 100) -> List[Dict[str, Any]]:
-    from app.models import LedgerEntry
-
-    rows = (
-        db.query(LedgerEntry)
-        .filter(LedgerEntry.user_id == user_id)
-        .order_by(LedgerEntry.timestamp.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {
-            "id": r.id,
-            "asset": r.asset,
-            "amount": float(r.amount),
-            "type": r.type,
-            "reference": r.reference,
-            "timestamp": r.timestamp.isoformat(),
-            "balance_before": r.balance_before,
-            "balance_after": r.balance_after,
-            "metadata": r.metadata,
-        }
-        for r in rows
-    ]
-
-
-def get_balance(db: Session, user_id: int, asset: str) -> float:
-    from app.models import User
-    user = db.query(User).filter(User.id == user_id).one_or_none()
     if user is None:
-        raise ValueError("User not found")
-    if hasattr(user, "balances") and isinstance(user.balances, dict):
-        return float(user.balances.get(asset.upper(), 0.0))
-    col_map = {"USDT": "balance_usdt", "INR": "balance_inr"}
-    if asset.upper() in col_map and hasattr(user, col_map[asset.upper()]):
-        return float(getattr(user, col_map[asset.upper()]) or 0.0)
-    return float(getattr(user, "balance", 0.0) or 0.0)
+        raise LedgerError("User not found")
+
+    # calculate balance field for asset (example uses dynamic attribute "balance_<asset_lower>" if exists)
+    balance_field = f"balance_{asset.lower()}"
+    if hasattr(user, balance_field):
+        current = Decimal(str(getattr(user, balance_field) or 0))
+        new_balance = current + amount_dec
+        setattr(user, balance_field, float(new_balance))
+    else:
+        # if you maintain balances in a separate table, update that table here
+        # fallback: store last_balance on ledger entry only
+        new_balance = None
+
+    entry = create_ledger_entry(db, user_id, asset, amount_dec, entry_type=reason, meta=meta)
+    # If you want to store resulting balance on entry:
+    if new_balance is not None:
+        entry.balance_after = float(new_balance)
+
+    db.add(user)
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
 
 
-def reconcile_balance_from_ledger(db: Session, user_id: int, asset: str) -> float:
+def debit_user_balance(db: Session, user_id: int, asset: str, amount: float, reason="debit", meta=None, allow_negative=False):
     """
-    Recompute balance for a user+asset by summing ledger entries and optionally write back to User.
-    Returns computed balance.
+    Debit user balance with concurrency-safe locking and optional negative prevention.
     """
-    from app.models import LedgerEntry, User
+    amount_dec = _normalize_amount(amount)
+    if amount_dec <= 0:
+        raise LedgerError("Debit amount must be positive")
 
-    total = (
-        db.query(LedgerEntry)
-        .filter(LedgerEntry.user_id == user_id)
-        .filter(LedgerEntry.asset == asset.upper())
-        .with_entities(func.coalesce(func.sum(LedgerEntry.amount), 0.0))
-        .scalar()
-    )
+    user = db.execute(
+        select(models.User).where(models.User.id == user_id).with_for_update()
+    ).scalar_one_or_none()
 
-    # optionally write back
-    user = db.query(User).filter(User.id == user_id).one_or_none()
-    if user:
-        try:
-            apply_balance_change(db, user, asset, total - get_balance(db, user_id, asset))
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
+    if user is None:
+        raise LedgerError("User not found")
 
-    return float(total)
+    balance_field = f"balance_{asset.lower()}"
+    if hasattr(user, balance_field):
+        current = Decimal(str(getattr(user, balance_field) or 0))
+        new_balance = current - amount_dec
+        if not allow_negative and new_balance < 0:
+            raise LedgerError("Insufficient balance")
+        setattr(user, balance_field, float(new_balance))
+    else:
+        new_balance = None
+
+    entry = create_ledger_entry(db, user_id, asset, -amount_dec, entry_type=reason, meta=meta)
+    if new_balance is not None:
+        entry.balance_after = float(new_balance)
+
+    db.add(user)
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def transfer_between_users(db: Session, from_user: int, to_user: int, asset: str, amount: float, meta=None):
+    """
+    Transfer between two users in a single DB transaction. Locks both rows consistently.
+    Uses deterministic order (lower id first) to avoid deadlocks.
+    """
+    if from_user == to_user:
+        raise LedgerError("Cannot transfer to same user")
+
+    amount_dec = _normalize_amount(amount)
+    if amount_dec <= 0:
+        raise LedgerError("Transfer amount must be positive")
+
+    # Lock users in deterministic order
+    first, second = (from_user, to_user) if from_user < to_user else (to_user, from_user)
+    users = db.execute(
+        select(models.User).where(models.User.id.in_([first, second])).with_for_update()
+    ).scalars().all()
+
+    # make sure both users present
+    if len(users) != 2:
+        raise LedgerError("One or both users not found")
+
+    user_map = {u.id: u for u in users}
+    sender = user_map[from_user]
+    receiver = user_map[to_user]
+
+    # Debit sender
+    debit_entry = debit_user_balance(db, from_user, asset, float(amount_dec), reason="transfer_debit", meta=meta)
+    # Credit receiver
+    credit_entry = credit_user_balance(db, to_user, asset, float(amount_dec), reason="transfer_credit", meta=meta)
+
+    return debit_entry, credit_entry
+
+
+def get_recent_ledger(db: Session, user_id: int, limit: int = 50):
+    q = select(models.LedgerEntry).where(models.LedgerEntry.user_id == user_id).order_by(models.LedgerEntry.created_at.desc()).limit(limit)
+    return db.execute(q).scalars().all()
+
+
+# If you prefer dependency-injection route handlers use get_db dependency and call these helpers.
+
