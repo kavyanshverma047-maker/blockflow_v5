@@ -82,6 +82,7 @@ class FuturesUsdmTrade(Base):
     amount = Column(Float)
     pnl = Column(Float, default=0.0)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    is_open = Column(Boolean, default=True)
 
 
 # =========================
