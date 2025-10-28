@@ -8,3 +8,5 @@ venv/
 .idea/
 .vscode/
 *.sqlite3
+blockflow.db
+app/FETCH_HEAD
