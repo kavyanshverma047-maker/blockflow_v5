@@ -57,6 +57,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             await websocket.receive_text()
     except WebSocketDisconnect:
         await manager.disconnect(user_id)
+from apscheduler.schedulers.background import BackgroundScheduler
+from app.services.position_manager import PositionManager
+from app.db import SessionLocal
+
+def refresh_pnl():
+    db = SessionLocal()
+    prices = {"BTCUSDT": 67000.0, "ETHUSDT": 2450.0}  # mock prices
+    PositionManager(db).update_positions(prices)
+    db.close()
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(refresh_pnl, "interval", seconds=10)
+scheduler.start()
 
 
 app = FastAPI(title="Blockflow Backend")
