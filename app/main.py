@@ -95,6 +95,17 @@ app.include_router(wallet_router)
 @app.get("/")
 def root():
     return {"message": "Blockflow backend ready!"}
+# --- Auto-migrate for Render free tier ---
+from alembic import command
+from alembic.config import Config
+import os
+
+def run_migrations():
+    alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "../alembic.ini"))
+    command.upgrade(alembic_cfg, "head")
+
+run_migrations()
+# --- End auto-migrate ---
 
 
 # Try import models from app.models (preferred) else models
