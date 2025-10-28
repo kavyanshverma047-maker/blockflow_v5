@@ -33,7 +33,10 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.inspection import inspect
 
 # 🔧 FIX: add current directory to sys.path for Render
+import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 # ✅ Corrected imports (all prefixed with `app.`)
 from app.metrics_service import router as metrics_router
@@ -105,6 +108,7 @@ logger.add(
            "{message}",
 )
 from app.api import admin_router
+from app.services.realtime_service import manager
 app.include_router(admin_router.router)
 
 # =====================================
