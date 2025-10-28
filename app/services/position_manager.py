@@ -17,7 +17,8 @@ class PositionManager:
 
     def update_positions(self, current_prices: dict):
         """Recalculate PnL for all open positions"""
-        trades = self.db.query(FuturesUSDMTrade).filter(FuturesUSDMTrade.is_open == True).all()
+        trades = self.db.query(FuturesUsdmTrade).filter(FuturesUsdmTrade.is_open == True).all()
+
         for t in trades:
             if t.pair in current_prices:
                 t.unrealized_pnl = self.calculate_pnl(t, current_prices[t.pair])
