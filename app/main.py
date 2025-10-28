@@ -84,6 +84,18 @@ logger.add(
 # =====================================
 # FASTAPI INITIALIZATION
 # =====================================
+import subprocess
+
+def run_migrations():
+    try:
+        print("🔄 Running Alembic migrations...")
+        subprocess.run(["alembic", "upgrade", "head"], check=True)
+        print("✅ Alembic migrations applied successfully!")
+    except Exception as e:
+        print("⚠️ Alembic migration failed:", e)
+
+run_migrations()
+
 app = FastAPI(title="Blockflow Backend", version="5.1")
 
 # Allow all origins (adjust for prod)
