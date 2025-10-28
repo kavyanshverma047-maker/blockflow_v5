@@ -2,7 +2,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db import get_db
-from app.models import User, LedgerEntry, FuturesUSDMTrade, SpotTrade
+from app.models import User, LedgerEntry, FuturesUsdmTrade, SpotTrade
+
 
 router = APIRouter(prefix="/admin", tags=["Admin"], include_in_schema=False)
 
