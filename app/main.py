@@ -46,6 +46,17 @@ from app.ledger_service import log_trade, get_recent_trades
 from app.alerts_service import simulate_alerts
 from app.wallet_router import router as wallet_router
 from app.auth_service import router as auth_router
+from fastapi import WebSocket, WebSocketDisconnect
+from app.services.realtime_service import manager
+
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    await manager.connect(user_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await manager.disconnect(user_id)
 
 
 app = FastAPI(title="Blockflow Backend")
