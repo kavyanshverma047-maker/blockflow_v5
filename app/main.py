@@ -91,6 +91,8 @@ logger.add(
            "<level>{level: <8}</level> | "
            "{message}",
 )
+from app.api import admin_router
+app.include_router(admin_router.router)
 
 # =====================================
 # FASTAPI INITIALIZATION
