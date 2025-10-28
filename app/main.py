@@ -19,6 +19,9 @@ import random
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
+from loguru import logger
+from fastapi.responses import JSONResponse
+from app.db import engine, Base
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +45,7 @@ from app.alerts_service import simulate_alerts
 from app.wallet_router import router as wallet_router
 from app.auth_service import router as auth_router
 
+
 app = FastAPI(title="Blockflow Backend")
 
 app.include_router(auth_router)
@@ -61,6 +65,84 @@ except Exception:
 from app.models import User, P2POrder, SpotTrade, MarginTrade, FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade
 # ✅ Database dependency
 from app.dependencies import get_db
+# =====================================
+# LOGGING SETUP (Loguru)
+# =====================================
+logger.add(
+    "blockflow.log",
+    rotation="5 MB",
+    retention="7 days",
+    level="INFO",
+    enqueue=True,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+           "<level>{level: <8}</level> | "
+           "{message}",
+)
+
+# =====================================
+# FASTAPI INITIALIZATION
+# =====================================
+app = FastAPI(title="Blockflow Backend", version="5.1")
+
+# Allow all origins (adjust for prod)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =====================================
+# GLOBAL ERROR HANDLER
+# =====================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": exc.__class__.__name__,
+            "detail": str(exc),
+            "path": request.url.path,
+        },
+    )
+
+# =====================================
+# REQUEST LOGGING MIDDLEWARE
+# =====================================
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"➡️ {request.method} {request.url.path}")
+    try:
+        response = await call_next(request)
+        logger.info(f"⬅️ {response.status_code} {request.url.path}")
+        return response
+    except Exception as e:
+        logger.exception(f"❌ Error in {request.method} {request.url.path}: {e}")
+        raise
+
+# =====================================
+# DATABASE INITIALIZATION
+# =====================================
+Base.metadata.create_all(bind=engine)
+
+# =====================================
+# ROUTERS
+# =====================================
+app.include_router(auth_router)
+app.include_router(wallet_router)
+
+# =====================================
+# BASIC ROUTES
+# =====================================
+@app.get("/")
+def root():
+    return {"message": "🚀 Blockflow backend ready!", "status": "ok"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "db": "connected"}
 
 # --------------------------
 # End of main.py
