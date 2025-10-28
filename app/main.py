@@ -1,3 +1,4 @@
+
 # app/main.py
 """
 Blockflow Exchange – Final investor-grade backend (Render-ready) - FIXED VERSION
@@ -22,6 +23,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 from fastapi.responses import JSONResponse
 from app.db import engine, Base
+from fastapi import Request
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
