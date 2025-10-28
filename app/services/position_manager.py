@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models import FuturesUSDMTrade, FuturesCOINMTrade, Wallet, LedgerEntry
+from app.models import FuturesUsdmTrade, FuturesCoinmTrade, LedgerEntry
 from datetime import datetime
 
 class PositionManager:
