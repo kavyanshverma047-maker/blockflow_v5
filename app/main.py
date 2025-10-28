@@ -30,7 +30,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.inspection import inspect
+from sqlalchemy.inspection import inspect# ================================================================
+# ✅ Initialize FastAPI app before decorators to avoid Render crash
+# ================================================================
+
+from fastapi import FastAPI
+import os, sys
+
+# fix import paths for Render (so "app.services" resolves)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+app = FastAPI()
+
 
 # 🔧 FIX: add current directory to sys.path for Render
 import sys, os
