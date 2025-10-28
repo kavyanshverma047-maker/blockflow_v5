@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from app.models import FuturesUsdmTrade, FuturesCoinmTrade, LedgerEntry
 from datetime import datetime
 
+
 class PositionManager:
     def __init__(self, db: Session):
         self.db = db
