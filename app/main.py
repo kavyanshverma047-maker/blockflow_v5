@@ -1,242 +1,91 @@
-# app/main.py
-"""
-Blockflow Exchange – Final Investor-Grade Backend (Render-Ready, FIXED)
-Version: 2.0-Brahmastra ✅
-
-Features:
- - Wallet, Ledger, Auth, Spot, Futures, Margin, Options, Admin, Compliance
- - WebSocket live updates
- - Auto Alembic migrations
- - Secure, Render-compatible imports
- - Global error handler + CORS + gzip
-"""
-
 import os
 import sys
 import json
-import subprocess
-from typing import Optional, Dict, Any
-from datetime import datetime
+import random
+import asyncio
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
 
-# ---------------------------
-# FastAPI & Dependencies
-# ---------------------------
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker, Session
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel
 from loguru import logger
 
-# ---------------------------
-# Local Imports
-# ---------------------------
+# Load environment
 from dotenv import load_dotenv
 load_dotenv()
 
-# Fix paths for Render
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Fix imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ---------------------------
-# Routers
-# ---------------------------
+# Import models FIRST
+from app.models import (
+    Base, User, P2POrder, SpotTrade, MarginTrade,
+    FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade
+)
+
+# Import routers
 from app.wallet_router import router as wallet_router
-from app.ledger_service import router as ledger_router
 from app.auth_service import router as auth_router
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
 from app.api import admin_router
-import app.ledger_service as ledger_service
 
-# ---------------------------
-# Settings
-# ---------------------------
-class Settings(BaseSettings):
-    ENV: str = os.getenv("ENV", "production")
-    DEBUG: bool = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./blockflow.db")
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./blockflow_v5.db")
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-settings = Settings()
+# Create tables
+Base.metadata.create_all(bind=engine)
 
-# ---------------------------
-# Alembic Auto-Migrate
-# ---------------------------
-def run_migrations():
+# Database dependency
+def get_db():
+    db = SessionLocal()
     try:
-        logger.info("🔄 Running Alembic migrations...")
-        subprocess.run(["alembic", "upgrade", "head"], check=True)
-        logger.info("✅ Alembic migrations applied successfully.")
-    except Exception as e:
-        logger.warning(f"⚠️ Alembic migration skipped/failed: {e}")
+        yield db
+    finally:
+        db.close()
 
-run_migrations()
-
-# ---------------------------
-# Initialize App
-# ---------------------------
+# Initialize FastAPI (ONLY ONCE)
 app = FastAPI(
-    title="Blockflow Exchange (Investor Demo - Fixed)",
-    description="Wallet, Ledger, Spot, Futures, Margin, Options, Auth, Admin",
+    title="Blockflow Exchange",
+    description="Full-featured crypto exchange backend",
     version="2.0-Brahmastra"
 )
 
-# ---------------------------
 # Middleware
-# ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # change to your Vercel frontend domain later
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# ---------------------------
-# Include Routers
-# ---------------------------
+# Include routers (ONLY ONCE EACH)
 app.include_router(auth_router)
 app.include_router(wallet_router)
-
 app.include_router(metrics_router)
 app.include_router(compliance_router)
 app.include_router(admin_router.router)
 
-# ---------------------------
-# WebSocket
-# ---------------------------
-from app.services.realtime_service import manager
-
-@app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    await manager.connect(user_id, websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await manager.disconnect(user_id)
-
-# ---------------------------
-# Health Checks
-# ---------------------------
+# Health checks (ONLY ONE OF EACH)
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Blockflow backend ready!"}
+    return {"status": "ok", "message": "Blockflow backend ready!", "version": "2.0"}
 
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
-
-# ---------------------------
-# Global Exception Handler
-# ---------------------------
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception(f"Unhandled error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": exc.__class__.__name__,
-            "detail": str(exc),
-            "path": request.url.path,
-        },
-    )
-
-
-# ---------- Request logging middleware ----------
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info("REQUEST: %s %s", request.method, request.url.path)
-    try:
-        response = await call_next(request)
-        logger.info("RESPONSE: %s %s -> %s", request.method, request.url.path, response.status_code)
-        return response
-    except Exception as e:
-        logger.exception("Error handling request %s %s: %s", request.method, request.url.path, str(e))
-        raise
-
-# ---------- Database / ORM initialization (placeholder) ----------
-# Import and initialize your DB engine / session maker here.
-# Example using SQLAlchemy:
-try:
-    from app.db import engine, Base  # adjust to your project layout
-    # Ensure metadata / tables exist (optional; Alembic is preferred)
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables ensured.")
-except Exception as e:
-    logger.warning("DB initialization skipped/failed: %s", str(e))
-
-# Attempt alembic migration on startup (best effort)
-try:
-    run_alembic_migrations()
-except Exception:
-    pass
-
-# ---------- Simple WebSocket manager (shared) ----------
-class ConnectionManager:
-    def __init__(self):
-        self.active: Dict[str, WebSocket] = {}
-
-    async def connect(self, user_id: str, websocket: WebSocket):
-        await websocket.accept()
-        self.active[user_id] = websocket
-        logger.debug("WS connected: %s", user_id)
-
-    def disconnect(self, user_id: str):
-        ws = self.active.pop(user_id, None)
-        if ws:
-            logger.debug("WS disconnected: %s", user_id)
-
-    async def send_to(self, user_id: str, message: Any):
-        ws = self.active.get(user_id)
-        if ws:
-            try:
-                await ws.send_json(message)
-            except Exception as e:
-                logger.debug("Failed send to %s: %s", user_id, str(e))
-
-    async def broadcast(self, message: Any):
-        for uid, ws in list(self.active.items()):
-            try:
-                await ws.send_json(message)
-            except Exception as e:
-                logger.debug("Broadcast failed to %s: %s", uid, str(e))
-
-ws_manager = ConnectionManager()
-
-# Provide a simple health endpoint
-@app.get("/health")
-async def health():
-    return {"status": "ok", "env": settings.ENV}
-
-# Provide a small root endpoint
-@app.get("/")
-async def root():
-    return {"message": "Blockflow backend ready", "version": settings.__dict__.get("ENV", "dev")}
-# =====================================
-# DATABASE INITIALIZATION
-# =====================================
-Base.metadata.create_all(bind=engine)
-
-# =====================================
-# ROUTERS
-# =====================================
-app.include_router(auth_router)
-app.include_router(wallet_router)
-
-# =====================================
-# BASIC ROUTES
-# =====================================
-@app.get("/")
-def root():
-    return {"message": "🚀 Blockflow backend ready!", "status": "ok"}
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "db": "connected"}
 
 # --------------------------
 # End of main.py
