@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db import get_db
+import traceback
 
 try:
     from app.models import User, SpotTrade, MarginTrade, FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade, P2POrder
@@ -23,14 +24,24 @@ router = APIRouter(
 def get_admin_stats(db: Session = Depends(get_db)):
     try:
         total_users = db.query(User).count()
-        total_spot = db.query(SpotTrade).count() if SpotTrade else 0
-        total_margin = db.query(MarginTrade).count() if MarginTrade else 0
-        total_futures_usdm = db.query(FuturesUsdmTrade).count() if FuturesUsdmTrade else 0
-        total_futures_coinm = db.query(FuturesCoinmTrade).count() if FuturesCoinmTrade else 0
-        total_options = db.query(OptionsTrade).count() if OptionsTrade else 0
-        total_p2p = db.query(P2POrder).count() if P2POrder else 0
+        
+        # Safe counting with error handling
+        def safe_count(model):
+            try:
+                return db.query(model).count() if model else 0
+            except Exception as e:
+                print(f"Error counting {model}: {e}")
+                return 0
+        
+        total_spot = safe_count(SpotTrade)
+        total_margin = safe_count(MarginTrade)
+        total_futures_usdm = safe_count(FuturesUsdmTrade)
+        total_futures_coinm = safe_count(FuturesCoinmTrade)
+        total_options = safe_count(OptionsTrade)
+        total_p2p = safe_count(P2POrder)
 
         return {
+            "status": "ok",
             "total_users": total_users,
             "spot_trades": total_spot,
             "margin_trades": total_margin,
@@ -41,6 +52,7 @@ def get_admin_stats(db: Session = Depends(get_db)):
             "total_volume": total_spot + total_margin + total_futures_usdm + total_futures_coinm + total_options
         }
     except Exception as e:
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health")
