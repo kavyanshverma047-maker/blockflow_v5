@@ -1,23 +1,37 @@
+
+
 # app/ledger_service.py
-from typing import Optional, Tuple, List, Any
-from decimal import Decimal
-from datetime import datetime
-
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
-
-from app import models
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import create_engine, func
+from app.db import engine, SessionLocal
+from app.models import LedgerEntry
+from app.dependencies import get_db
 
 router = APIRouter(prefix="/api/ledger", tags=["Ledger"])
 
+# ✅ Get all ledger entries
+@router.get("/entries")
+def get_entries(db: Session = Depends(get_db)):
+    entries = db.query(LedgerEntry).all()
+    return {"count": len(entries), "entries": [e.to_dict() for e in entries]}
+
+# ✅ Get user-specific ledger
+@router.get("/user/{user_id}")
+def get_user_ledger(user_id: int, db: Session = Depends(get_db)):
+    entries = db.query(LedgerEntry).filter(LedgerEntry.user_id == user_id).all()
+    return {"user_id": user_id, "entries": [e.to_dict() for e in entries]}
+
+# ✅ Ledger summary for Proof of Reserves–style totals
 @router.get("/summary")
-def get_ledger_summary():
-    return {"total_balance": 0.0, "total_users": 0, "status": "ok"}
-
-SUPPORTED_ASSETS = {"USDT", "BTC", "ETH", "INR"}
-
+def get_summary(db: Session = Depends(get_db)):
+    total_balance = db.query(func.sum(LedgerEntry.amount)).scalar() or 0
+    total_entries = db.query(LedgerEntry).count()
+    return {
+        "total_balance": total_balance,
+        "total_entries": total_entries,
+        "status": "ok"
+    }
 
 class LedgerError(Exception):
     pass
