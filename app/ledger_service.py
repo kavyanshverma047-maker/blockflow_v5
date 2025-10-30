@@ -8,6 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import models
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api/ledger", tags=["Ledger"])
+
+@router.get("/summary")
+def get_ledger_summary():
+    return {"total_balance": 0.0, "total_users": 0, "status": "ok"}
 
 SUPPORTED_ASSETS = {"USDT", "BTC", "ETH", "INR"}
 
