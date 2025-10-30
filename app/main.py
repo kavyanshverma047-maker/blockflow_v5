@@ -110,11 +110,13 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 # ---------------------------
 # Include Routers (ONLY ONCE)
 # ---------------------------
-app.include_router(auth_router)
-app.include_router(wallet_router)
-app.include_router(metrics_router)
-app.include_router(compliance_router)
-app.include_router(admin_router.router)
+# ✅ Include all routers with /api prefix (so frontend can access them)
+app.include_router(auth_router, prefix="/api")
+app.include_router(wallet_router, prefix="/api")
+app.include_router(metrics_router, prefix="/api")
+app.include_router(compliance_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
+
 
 # ---------------------------
 # WebSocket (Import manager from service)
