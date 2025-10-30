@@ -28,26 +28,14 @@ from datetime import datetime, timezone
 # ---------------------------
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from loguru import logger
-origins = [
-    "http://localhost:3000",                 # Local Next.js dev
-    "https://blockflow-frontend.vercel.app", # Tera Vercel frontend
-    "https://blockflow.vercel.app",          # Backup domain (if any)
-]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 # ---------------------------
 # Local Imports
 # ---------------------------
@@ -65,15 +53,6 @@ from app.models import (
     Base, User, P2POrder, SpotTrade, MarginTrade,
     FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade
 )
-
-# ---------------------------
-# Routers
-# ---------------------------
-from app.wallet_router import router as wallet_router
-from app.auth_service import router as auth_router
-from app.metrics_service import router as metrics_router
-from app.compliance_service import router as compliance_router
-from app.api import admin_router
 
 # ---------------------------
 # Settings
@@ -120,14 +99,38 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # ---------------------------
-# Include Routers (ONLY ONCE)
+# Include Routers (AFTER app creation)
 # ---------------------------
-# ✅ Include all routers with /api prefix (so frontend can access them)
-app.include_router(auth_router, prefix="/api")
-app.include_router(wallet_router, prefix="/api")
-app.include_router(metrics_router, prefix="/api")
-app.include_router(compliance_router, prefix="/api")
-app.include_router(admin_router.router, prefix="/api")  
+# ✅ Import routers AFTER app is created
+try:
+    from app.wallet_router import router as wallet_router
+    app.include_router(wallet_router, prefix="/api")
+except ImportError as e:
+    logger.warning(f"⚠️ Could not import wallet_router: {e}")
+
+try:
+    from app.auth_service import router as auth_router
+    app.include_router(auth_router, prefix="/api")
+except ImportError as e:
+    logger.warning(f"⚠️ Could not import auth_service: {e}")
+
+try:
+    from app.metrics_service import router as metrics_router
+    app.include_router(metrics_router, prefix="/api")
+except ImportError as e:
+    logger.warning(f"⚠️ Could not import metrics_service: {e}")
+
+try:
+    from app.compliance_service import router as compliance_router
+    app.include_router(compliance_router, prefix="/api")
+except ImportError as e:
+    logger.warning(f"⚠️ Could not import compliance_service: {e}")
+
+try:
+    from app.api import admin_router
+    app.include_router(admin_router.router, prefix="/api")
+except ImportError as e:
+    logger.warning(f"⚠️ Could not import admin_router: {e}")
 
 
 # ---------------------------
