@@ -2,6 +2,10 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+
+# Declarative Base for models
+Base = declarative_base()
 
 def detect_db_url():
     env = os.getenv("DATABASE_URL")
