@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
 from pydantic_settings import BaseSettings
 from loguru import logger
 
