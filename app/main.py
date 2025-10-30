@@ -1,11 +1,31 @@
+# app/main.py
+"""
+Blockflow Exchange – Final Investor-Grade Backend (Render-Ready, FIXED)
+Version: 2.0-Brahmastra ✅
+
+Features:
+ - Wallet, Ledger, Auth, Spot, Futures, Margin, Options, Admin, Compliance
+ - WebSocket live updates
+ - Auto Alembic migrations
+ - Secure, Render-compatible imports
+ - Global error handler + CORS + gzip
+"""
+
 import os
 import sys
 import json
+import subprocess
+import threading
+import time
+import requests
 import random
 import asyncio
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
+# ---------------------------
+# FastAPI & Dependencies
+# ---------------------------
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -13,86 +33,146 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
+from pydantic_settings import BaseSettings
 from loguru import logger
 
-# Load environment
+# ---------------------------
+# Local Imports
+# ---------------------------
 from dotenv import load_dotenv
 load_dotenv()
 
-# Fix imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Fix paths for Render
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import models FIRST
+# ---------------------------
+# Import Models FIRST (FIX for NameError)
+# ---------------------------
 from app.models import (
     Base, User, P2POrder, SpotTrade, MarginTrade,
     FuturesUsdmTrade, FuturesCoinmTrade, OptionsTrade
 )
 
-# Import routers
+# ---------------------------
+# Routers
+# ---------------------------
 from app.wallet_router import router as wallet_router
 from app.auth_service import router as auth_router
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
 from app.api import admin_router
 
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./blockflow_v5.db")
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# ---------------------------
+# Settings
+# ---------------------------
+class Settings(BaseSettings):
+    ENV: str = os.getenv("ENV", "production")
+    DEBUG: bool = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./blockflow.db")
 
-# Create tables
-Base.metadata.create_all(bind=engine)
+settings = Settings()
 
-# Database dependency
-def get_db():
-    db = SessionLocal()
+# ---------------------------
+# Alembic Auto-Migrate
+# ---------------------------
+def run_migrations():
     try:
-        yield db
-    finally:
-        db.close()
+        logger.info("🔄 Running Alembic migrations...")
+        subprocess.run(["alembic", "upgrade", "head"], check=True)
+        logger.info("✅ Alembic migrations applied successfully.")
+    except Exception as e:
+        logger.warning(f"⚠️ Alembic migration skipped/failed: {e}")
 
-# Initialize FastAPI
+run_migrations()
+
+# ---------------------------
+# Initialize App (SINGLE INSTANCE)
+# ---------------------------
 app = FastAPI(
-    title="Blockflow Exchange",
-    version="2.0"
+    title="Blockflow Exchange (Investor Demo - Fixed)",
+    description="Wallet, Ledger, Spot, Futures, Margin, Options, Auth, Admin",
+    version="2.0-Brahmastra"
 )
 
+# ---------------------------
 # Middleware
+# ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # change to your Vercel frontend domain later
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# Include routers
+# ---------------------------
+# Include Routers (ONLY ONCE)
+# ---------------------------
 app.include_router(auth_router)
 app.include_router(wallet_router)
 app.include_router(metrics_router)
 app.include_router(compliance_router)
 app.include_router(admin_router.router)
 
-# Health checks
+# ---------------------------
+# WebSocket (Import manager from service)
+# ---------------------------
+try:
+    from app.services.realtime_service import manager
+    
+    @app.websocket("/ws/{user_id}")
+    async def websocket_endpoint(websocket: WebSocket, user_id: str):
+        await manager.connect(user_id, websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            await manager.disconnect(user_id)
+except ImportError:
+    logger.warning("⚠️ realtime_service not found, skipping WebSocket /ws/{user_id}")
+
+# ---------------------------
+# Health Checks (SINGLE INSTANCE)
+# ---------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Blockflow ready!", "version": "2.0"}
+    return {"status": "ok", "message": "Blockflow backend ready!", "version": "2.0-Brahmastra"}
 
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
-# DON'T add startup tasks with undefined functions
+# ---------------------------
+# Global Exception Handler
+# ---------------------------
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": exc.__class__.__name__,
+            "detail": str(exc),
+            "path": request.url.path,
+        },
+    )
 
-# --------------------------
-# End of main.py
-# --------------------------
+# ---------- Request logging middleware ----------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info("REQUEST: %s %s", request.method, request.url.path)
+    try:
+        response = await call_next(request)
+        logger.info("RESPONSE: %s %s -> %s", request.method, request.url.path, response.status_code)
+        return response
+    except Exception as e:
+        logger.exception("Error handling request %s %s: %s", request.method, request.url.path, str(e))
+        raise
+
+# ---------- Database / ORM initialization ----------
 # DB detection
-# --------------------------
 def detect_db_url() -> str:
     env = os.getenv("DATABASE_URL")
     if env:
@@ -112,40 +192,26 @@ def detect_db_url() -> str:
 
 DATABASE_URL = detect_db_url()
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# ensure tables exist (safe)
+# Ensure tables exist (safe)
 try:
     Base.metadata.create_all(bind=engine)
+    logger.info("✅ Database tables created/verified")
 except Exception as e:
-    print("WARNING: could not auto-create tables:", e)
+    logger.warning(f"⚠️ Could not auto-create tables: {e}")
 
-# --------------------------
-# FastAPI app
-# --------------------------
-app = FastAPI(title="Blockflow Exchange (Investor Demo - Fixed)", version="5.1")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-@app.on_event("startup")
-async def start_background_tasks():
-    asyncio.create_task(simulate_metrics())
-@app.get("/api/liquidity")
-def api_liquidity():
-    """Return aggregated liquidity pool snapshot for frontend dashboards."""
+# Database dependency
+def get_db():
+    db = SessionLocal()
     try:
-        return {"status": "ok", "data": get_pool_state()}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-@app.get("/api/alerts")
-def get_alerts():
-    """Return dynamic exchange/compliance alerts."""
-    return {"status": "ok", "data": simulate_alerts()}
-
-
-app.include_router(metrics_router)
-app.include_router(compliance_router)
-app.include_router(auth_router)
-
+        yield db
+    finally:
+        db.close()
 
 # --------------------------
 # Helper: Model to Dict
@@ -240,17 +306,6 @@ class OptionsPlaceSchema(BaseModel):
     size: float
 
 # --------------------------
-# Root / Health
-# --------------------------
-@app.get("/")
-async def root():
-    return {"ok": True, "app": "blockflow-exchange-fixed", "version": "5.1", "time": datetime.now(timezone.utc).isoformat()}
-
-@app.get("/health")
-async def health():
-    return {"ok": True, "db": DATABASE_URL, "status": "connected"}
-
-# --------------------------
 # P2P Endpoints
 # --------------------------
 @app.get("/p2p/orders")
@@ -284,7 +339,16 @@ async def p2p_create(req: P2PCreateSchema, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(o)
     try:
-        await ws_manager.broadcast_json({"type":"p2p_new", "order": {"id": o.id, "username": o.username, "asset": o.asset, "price": o.price, "amount": o.amount}})
+        await ws_manager.broadcast_json({
+            "type":"p2p_new", 
+            "order": {
+                "id": o.id, 
+                "username": o.username, 
+                "asset": o.asset, 
+                "price": o.price, 
+                "amount": o.amount
+            }
+        })
     except Exception:
         pass
     return {"ok": True, "id": o.id}
@@ -342,20 +406,33 @@ async def spot_trade(req: SpotPlaceSchema, db: Session = Depends(get_db)):
     except Exception:
         pass
     
-    return {"ok": True, "success": True, "id": t.id, "executed": {
-        "id": t.id,
-        "price": t.price,
-        "amount": t.amount,
-        "side": t.side
-    }}
+    return {
+        "ok": True, 
+        "success": True, 
+        "id": t.id, 
+        "executed": {
+            "id": t.id,
+            "price": t.price,
+            "amount": t.amount,
+            "side": t.side
+        }
+    }
 
 @app.get("/spot/orders")
 async def spot_orders(db: Session = Depends(get_db)):
     rows = db.query(SpotTrade).order_by(SpotTrade.timestamp.desc()).limit(200).all()
-    return [{"id": r.id, "username": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "side": r.side, "ts": str(r.timestamp)} for r in rows]
+    return [{
+        "id": r.id, 
+        "username": r.username, 
+        "pair": r.pair, 
+        "price": r.price, 
+        "amount": r.amount, 
+        "side": r.side, 
+        "ts": str(r.timestamp)
+    } for r in rows]
 
 # --------------------------
-# NEW: Trades with Symbol Filter
+# Trades with Symbol Filter
 # --------------------------
 @app.get("/api/trades")
 async def get_trades(symbol: Optional[str] = None, limit: int = 200, db: Session = Depends(get_db)):
@@ -378,11 +455,11 @@ async def get_trades(symbol: Optional[str] = None, limit: int = 200, db: Session
         } for t in trades]
     
     except Exception as e:
-        print(f"Trades error: {e}")
+        logger.error(f"Trades error: {e}")
         return []
 
 # --------------------------
-# NEW: Orderbook with Symbol Filter
+# Orderbook with Symbol Filter
 # --------------------------
 @app.get("/api/market/orderbook")
 async def get_orderbook(symbol: Optional[str] = None, db: Session = Depends(get_db)):
@@ -415,11 +492,11 @@ async def get_orderbook(symbol: Optional[str] = None, db: Session = Depends(get_
         }
     
     except Exception as e:
-        print(f"Orderbook error: {e}")
+        logger.error(f"Orderbook error: {e}")
         return {"bids": [], "asks": []}
 
 # --------------------------
-# NEW: Leaderboard Endpoint
+# Leaderboard Endpoint
 # --------------------------
 @app.get("/api/leaderboard")
 async def get_leaderboard(limit: int = 10, db: Session = Depends(get_db)):
@@ -452,7 +529,7 @@ async def get_leaderboard(limit: int = 10, db: Session = Depends(get_db)):
         return leaderboard[:limit]
     
     except Exception as e:
-        print(f"Leaderboard error: {e}")
+        logger.error(f"Leaderboard error: {e}")
         # Return demo data if error
         return [
             {"id": 1, "username": "Alpha", "pnl": 12450},
@@ -460,7 +537,7 @@ async def get_leaderboard(limit: int = 10, db: Session = Depends(get_db)):
         ]
 
 # --------------------------
-# NEW: Active Positions
+# Active Positions
 # --------------------------
 @app.get("/api/positions")
 async def get_positions(username: Optional[str] = "demo_trader_0", db: Session = Depends(get_db)):
@@ -504,7 +581,7 @@ async def get_positions(username: Optional[str] = "demo_trader_0", db: Session =
         return positions
     
     except Exception as e:
-        print(f"Positions error: {e}")
+        logger.error(f"Positions error: {e}")
         return []
 
 # --------------------------
@@ -527,7 +604,11 @@ async def margin_trade(req: SpotPlaceSchema, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(t)
     try:
-        await ws_manager.broadcast_json({"type":"trade", "market":"margin", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
+        await ws_manager.broadcast_json({
+            "type":"trade", 
+            "market":"margin", 
+            "trade": {"id": t.id, "pair": t.pair, "price": t.price}
+        })
     except Exception:
         pass
     return {"ok": True, "id": t.id, "pnl": t.pnl}
@@ -535,7 +616,14 @@ async def margin_trade(req: SpotPlaceSchema, db: Session = Depends(get_db)):
 @app.get("/margin/orders")
 async def margin_orders(db: Session = Depends(get_db)):
     rows = db.query(MarginTrade).order_by(MarginTrade.timestamp.desc()).limit(200).all()
-    return [{"id": r.id, "user": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "pnl": r.pnl} for r in rows]
+    return [{
+        "id": r.id, 
+        "user": r.username, 
+        "pair": r.pair, 
+        "price": r.price, 
+        "amount": r.amount, 
+        "pnl": r.pnl
+    } for r in rows]
 
 # --------------------------
 # Futures USDM Endpoints
@@ -555,7 +643,11 @@ async def futures_usdm_trade(req: FuturesPlaceSchema, db: Session = Depends(get_
     db.commit()
     db.refresh(t)
     try:
-        await ws_manager.broadcast_json({"type":"trade", "market":"futures_usdm", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
+        await ws_manager.broadcast_json({
+            "type":"trade", 
+            "market":"futures_usdm", 
+            "trade": {"id": t.id, "pair": t.pair, "price": t.price}
+        })
     except Exception:
         pass
     return {"ok": True, "id": t.id}
@@ -563,7 +655,14 @@ async def futures_usdm_trade(req: FuturesPlaceSchema, db: Session = Depends(get_
 @app.get("/futures/usdm/orders")
 async def futures_usdm_orders(db: Session = Depends(get_db)):
     rows = db.query(FuturesUsdmTrade).order_by(FuturesUsdmTrade.timestamp.desc()).limit(200).all()
-    return [{"id": r.id, "user": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "leverage": r.leverage} for r in rows]
+    return [{
+        "id": r.id, 
+        "user": r.username, 
+        "pair": r.pair, 
+        "price": r.price, 
+        "amount": r.amount, 
+        "leverage": r.leverage
+    } for r in rows]
 
 # --------------------------
 # Futures COINM Endpoints
@@ -583,7 +682,11 @@ async def futures_coinm_trade(req: FuturesPlaceSchema, db: Session = Depends(get
     db.commit()
     db.refresh(t)
     try:
-        await ws_manager.broadcast_json({"type":"trade", "market":"futures_coinm", "trade": {"id": t.id, "pair": t.pair, "price": t.price}})
+        await ws_manager.broadcast_json({
+            "type":"trade", 
+            "market":"futures_coinm", 
+            "trade": {"id": t.id, "pair": t.pair, "price": t.price}
+        })
     except Exception:
         pass
     return {"ok": True, "id": t.id}
@@ -591,7 +694,14 @@ async def futures_coinm_trade(req: FuturesPlaceSchema, db: Session = Depends(get
 @app.get("/futures/coinm/orders")
 async def futures_coinm_orders(db: Session = Depends(get_db)):
     rows = db.query(FuturesCoinmTrade).order_by(FuturesCoinmTrade.timestamp.desc()).limit(200).all()
-    return [{"id": r.id, "user": r.username, "pair": r.pair, "price": r.price, "amount": r.amount, "leverage": r.leverage} for r in rows]
+    return [{
+        "id": r.id, 
+        "user": r.username, 
+        "pair": r.pair, 
+        "price": r.price, 
+        "amount": r.amount, 
+        "leverage": r.leverage
+    } for r in rows]
 
 # --------------------------
 # Options Endpoints
@@ -611,7 +721,11 @@ async def options_trade(req: OptionsPlaceSchema, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(t)
     try:
-        await ws_manager.broadcast_json({"type":"trade", "market":"options", "trade": {"id": t.id, "pair": t.pair}})
+        await ws_manager.broadcast_json({
+            "type":"trade", 
+            "market":"options", 
+            "trade": {"id": t.id, "pair": t.pair}
+        })
     except Exception:
         pass
     return {"ok": True, "id": t.id}
@@ -619,7 +733,14 @@ async def options_trade(req: OptionsPlaceSchema, db: Session = Depends(get_db)):
 @app.get("/options/orders")
 async def options_orders(db: Session = Depends(get_db)):
     rows = db.query(OptionsTrade).order_by(OptionsTrade.timestamp.desc()).limit(200).all()
-    return [{"id": r.id, "user": r.username, "pair": r.pair, "strike": r.strike, "premium": r.premium, "size": r.size} for r in rows]
+    return [{
+        "id": r.id, 
+        "user": r.username, 
+        "pair": r.pair, 
+        "strike": r.strike, 
+        "premium": r.premium, 
+        "size": r.size
+    } for r in rows]
 
 # --------------------------
 # Ledger Summary
@@ -800,7 +921,7 @@ async def ws_market(ws: WebSocket):
                     await asyncio.sleep(2)
                 
                 except Exception as e:
-                    print(f"Stream error: {e}")
+                    logger.error(f"Stream error: {e}")
                     await asyncio.sleep(2)
         
         # Start streaming
@@ -821,12 +942,12 @@ async def ws_market(ws: WebSocket):
                     }))
             
             except Exception as e:
-                print(f"Message error: {e}")
+                logger.error(f"Message error: {e}")
     
     except WebSocketDisconnect:
         await ws_manager.disconnect(ws)
     except Exception as e:
-        print(f"WS error: {e}")
+        logger.error(f"WS error: {e}")
         await ws_manager.disconnect(ws)
 
 # --------------------------
@@ -835,7 +956,7 @@ async def ws_market(ws: WebSocket):
 @app.on_event("startup")
 async def startup_tasks():
     """Auto-run background tasks"""
-    print("✅ Blockflow backend starting...")
+    logger.info("✅ Blockflow backend starting...")
     
     # Auto-seed if no users exist
     try:
@@ -844,22 +965,16 @@ async def startup_tasks():
         db.close()
         
         if user_count == 0:
-            print("🌱 No users found, auto-seeding 500 demo users...")
+            logger.info("🌱 No users found, auto-seeding 500 demo users...")
             await admin_seed(500)
     except Exception as e:
-        print(f"⚠️ Startup seeding error: {e}")
+        logger.warning(f"⚠️ Startup seeding error: {e}")
     
-    print("🚀 Blockflow backend ready!")
- # ==============================
+    logger.info("🚀 Blockflow backend ready!")
+
+# ==============================
 # 🟢 KEEP-ALIVE PATCH (Render backend auto sleep fix)
 # ==============================
-import sys, os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import threading
-import time
-import requests
-
 def keep_alive():
     """
     This function pings your own Render URL every 5 minutes
@@ -867,17 +982,20 @@ def keep_alive():
     """
     while True:
         try:
-            url = "https://blockflow-v5-1.onrender.com"  # apna Render backend URL yahan daal
-            r = requests.get(url, timeout=10)
-            print(f"[KeepAlive] Pinged backend — status {r.status_code}")
+            url = os.getenv("RENDER_EXTERNAL_URL", "https://blockflow-v5-1.onrender.com")
+            r = requests.get(f"{url}/health", timeout=10)
+            logger.info(f"[KeepAlive] Pinged backend – status {r.status_code}")
         except Exception as e:
-            print(f"[KeepAlive] Error pinging backend: {e}")
+            logger.error(f"[KeepAlive] Error pinging backend: {e}")
         time.sleep(300)  # ping every 5 minutes
 
-# Run it in background
-threading.Thread(target=keep_alive, daemon=True).start()
+# Run keep-alive in background (only in production)
+if os.getenv("ENV", "production") == "production":
+    threading.Thread(target=keep_alive, daemon=True).start()
+    logger.info("🟢 Keep-alive thread started")
 
-
+# --------------------------
+# End of main.py
 # --------------------------
 
 
