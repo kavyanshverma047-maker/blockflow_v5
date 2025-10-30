@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, func
 from app.db import engine, SessionLocal
 from app.models import LedgerEntry
 from app.dependencies import get_db
+from decimal import Decimal
 
 router = APIRouter(prefix="/api/ledger", tags=["Ledger"])
 
