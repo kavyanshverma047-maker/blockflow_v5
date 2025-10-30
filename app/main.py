@@ -115,7 +115,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(wallet_router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(compliance_router, prefix="/api")
-app.include_router(admin_router, prefix="/api")
+app.include_router(admin_router.router, prefix="/api")  
 
 
 # ---------------------------
