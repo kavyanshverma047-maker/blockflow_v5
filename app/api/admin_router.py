@@ -1,9 +1,9 @@
 
+# app/admin_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.db import get_db  # ✅ YE LINE CHANGE KARO
+from app.db import get_db
 
-# Safe imports for models
 try:
     from app.models import User, SpotTrade, MarginTrade, FuturesUsdmTrade, FuturesCoinmTrade
 except ImportError:
@@ -37,17 +37,3 @@ def get_admin_stats(db: Session = Depends(get_db)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-```
-
-## Step 3: DONE! 🎉
-
-**Bas itna hi!** Main.py ko touch bhi mat karna. 
-
-Ye 2 files banao/update karo:
-1. ✅ `app/db.py` - NEW file
-2. ✅ `app/admin_router.py` - Sirf pehli line change (`from app.db import get_db`)
-
-**Deploy karo Render pe aur check karo:**
-```
-https://blockflow-v5-1.onrender.com/health
-https://blockflow-v5-1.onrender.com/api/admin/stats
