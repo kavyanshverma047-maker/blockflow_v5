@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from sqlalchemy import create_engine
 
 # Add project path so Render or other runners find subpackages reliably
