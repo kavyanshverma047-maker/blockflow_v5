@@ -28,14 +28,26 @@ from datetime import datetime, timezone
 # ---------------------------
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from loguru import logger
+origins = [
+    "http://localhost:3000",                 # Local Next.js dev
+    "https://blockflow-frontend.vercel.app", # Tera Vercel frontend
+    "https://blockflow.vercel.app",          # Backup domain (if any)
+]
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ---------------------------
 # Local Imports
 # ---------------------------
