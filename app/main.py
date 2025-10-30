@@ -1,102 +1,148 @@
+# app/main.py
+"""
+Blockflow Exchange – Final Investor-Grade Backend (Render-Ready, FIXED)
+Version: 2.0-Brahmastra ✅
+
+Features:
+ - Wallet, Ledger, Auth, Spot, Futures, Margin, Options, Admin, Compliance
+ - WebSocket live updates
+ - Auto Alembic migrations
+ - Secure, Render-compatible imports
+ - Global error handler + CORS + gzip
+"""
 
 import os
 import sys
 import json
-import logging
 import subprocess
 from typing import Optional, Dict, Any
+from datetime import datetime
 
+# ---------------------------
+# FastAPI & Dependencies
+# ---------------------------
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from pydantic_settings import BaseSettings
+from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
+from pydantic_settings import BaseSettings
+from loguru import logger
 
-# Add project path so Render or other runners find subpackages reliably
-ROOT = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(ROOT)
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
-
-# Optional: load environment from .env if present
+# ---------------------------
+# Local Imports
+# ---------------------------
 from dotenv import load_dotenv
 load_dotenv()
 
-# ---------- Settings ----------
+# Fix paths for Render
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ---------------------------
+# Routers
+# ---------------------------
+from app.wallet_router import router as wallet_router
+from app.ledger_service import router as ledger_router
+from app.auth_service import router as auth_router
+from app.metrics_service import router as metrics_router
+from app.compliance_service import router as compliance_router
+from app.api import admin_router
+
+# ---------------------------
+# Settings
+# ---------------------------
 class Settings(BaseSettings):
-    ENV: str = os.getenv("ENV", "development")
+    ENV: str = os.getenv("ENV", "production")
     DEBUG: bool = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./blockflow.db")
-    # External host for the frontend to call
-    API_PREFIX: str = os.getenv("API_PREFIX", "/api")
-    # WS base if needed
-    WS_PREFIX: str = os.getenv("WS_PREFIX", "/ws")
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()
 
-# ---------- Logging ----------
-logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
-logger = logging.getLogger("blockflow")
-
-# ---------- Alembic / DB bootstrap (best-effort run at startup) ----------
-def run_alembic_migrations():
-    """
-    Attempt to run alembic upgrade head at startup.
-    If alembic not configured or fails, log and continue.
-    """
+# ---------------------------
+# Alembic Auto-Migrate
+# ---------------------------
+def run_migrations():
     try:
-        # Adjust this command if your alembic.ini is in a different location
-        logger.info("Running Alembic migrations...")
-        subprocess.run(
-            ["alembic", "upgrade", "head"],
-            check=True,
-            cwd=PROJECT_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        logger.info("Alembic migrations applied successfully.")
+        logger.info("🔄 Running Alembic migrations...")
+        subprocess.run(["alembic", "upgrade", "head"], check=True)
+        logger.info("✅ Alembic migrations applied successfully.")
     except Exception as e:
-        logger.warning("Alembic migrations skipped/failed: %s", str(e))
+        logger.warning(f"⚠️ Alembic migration skipped/failed: {e}")
 
-# ---------- Single FastAPI app (KEEP ONLY ONE) ----------
+run_migrations()
+
+# ---------------------------
+# Initialize App
+# ---------------------------
 app = FastAPI(
     title="Blockflow Exchange (Investor Demo - Fixed)",
-    description="Blockflow backend: Wallet, Ledger, Spot, Futures, Auth, Admin",
-    version="2.0-Brahmastra",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    description="Wallet, Ledger, Spot, Futures, Margin, Options, Auth, Admin",
+    version="2.0-Brahmastra"
 )
 
-# ---------- Middlewares ----------
-# CORS - allow your frontends (be restrictive in prod)
+# ---------------------------
+# Middleware
+# ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.DEBUG else ["https://your-frontend-domain.com"],
+    allow_origins=["*"],  # change to your Vercel frontend domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# GZip for responses (optional)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# ---------- Global exception handler ----------
+# ---------------------------
+# Include Routers
+# ---------------------------
+app.include_router(auth_router)
+app.include_router(wallet_router)
+app.include_router(ledger_router)
+app.include_router(metrics_router)
+app.include_router(compliance_router)
+app.include_router(admin_router.router)
+
+# ---------------------------
+# WebSocket
+# ---------------------------
+from app.services.realtime_service import manager
+
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    await manager.connect(user_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await manager.disconnect(user_id)
+
+# ---------------------------
+# Health Checks
+# ---------------------------
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Blockflow backend ready!"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# ---------------------------
+# Global Exception Handler
+# ---------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled error: %s %s", request.url.path, str(exc))
+    logger.exception(f"Unhandled error: {exc}")
     return JSONResponse(
         status_code=500,
         content={
-            "error": "internal_server_error",
+            "error": exc.__class__.__name__,
             "detail": str(exc),
             "path": request.url.path,
         },
     )
+
 
 # ---------- Request logging middleware ----------
 @app.middleware("http")
