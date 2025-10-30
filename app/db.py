@@ -3,7 +3,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-def detect_db_url() -> str:
+def detect_db_url():
     env = os.getenv("DATABASE_URL")
     if env:
         return env
