@@ -48,6 +48,7 @@ from app.auth_service import router as auth_router
 from app.metrics_service import router as metrics_router
 from app.compliance_service import router as compliance_router
 from app.api import admin_router
+import app.ledger_service as ledger_service
 
 # ---------------------------
 # Settings
@@ -98,7 +99,7 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 # ---------------------------
 app.include_router(auth_router)
 app.include_router(wallet_router)
-app.include_router(ledger_router)
+
 app.include_router(metrics_router)
 app.include_router(compliance_router)
 app.include_router(admin_router.router)
