@@ -54,11 +54,10 @@ def get_db():
     finally:
         db.close()
 
-# Initialize FastAPI (ONLY ONCE)
+# Initialize FastAPI
 app = FastAPI(
     title="Blockflow Exchange",
-    description="Full-featured crypto exchange backend",
-    version="2.0-Brahmastra"
+    version="2.0"
 )
 
 # Middleware
@@ -71,21 +70,23 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# Include routers (ONLY ONCE EACH)
+# Include routers
 app.include_router(auth_router)
 app.include_router(wallet_router)
 app.include_router(metrics_router)
 app.include_router(compliance_router)
 app.include_router(admin_router.router)
 
-# Health checks (ONLY ONE OF EACH)
+# Health checks
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Blockflow backend ready!", "version": "2.0"}
+    return {"status": "ok", "message": "Blockflow ready!", "version": "2.0"}
 
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# DON'T add startup tasks with undefined functions
 
 # --------------------------
 # End of main.py
@@ -116,7 +117,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # ensure tables exist (safe)
 try:
-    models.Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
 except Exception as e:
     print("WARNING: could not auto-create tables:", e)
 
