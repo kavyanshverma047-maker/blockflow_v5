@@ -2,9 +2,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db import get_db
-from app.models import User, LedgerEntry, FuturesUsdMTrade, SpotTrade
 
-# ✅ Use "router" as the export name (FastAPI expects this)
+# Safe imports for models
+try:
+    from app.models import User, LedgerEntry, FuturesUsdMTrade, SpotTrade
+except ImportError:
+    from app.models import User, LedgerEntry
+    FuturesUsdMTrade = None
+    SpotTrade = None
+
 router = APIRouter(
     prefix="/admin",
     tags=["Admin"],
@@ -16,8 +22,11 @@ def get_admin_stats(db: Session = Depends(get_db)):
     try:
         total_users = db.query(User).count()
         total_ledger = db.query(LedgerEntry).count()
-        total_spot_trades = db.query(SpotTrade).count()
-        total_futures_trades = db.query(FuturesUsdMTrade).count()
+
+        # ✅ Handle missing models gracefully
+        total_spot_trades = db.query(SpotTrade).count() if SpotTrade else 0
+        total_futures_trades = db.query(FuturesUsdMTrade).count() if FuturesUsdMTrade else 0
+
         total_volume = db.query(LedgerEntry).filter(LedgerEntry.type == "TRADE").count()
 
         return {
