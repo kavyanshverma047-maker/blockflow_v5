@@ -1,222 +1,106 @@
 
 
 # app/ledger_service.py
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import create_engine, func
-from app.db import engine, SessionLocal
+"""
+Ledger Service – Blockflow Exchange (Render-ready)
+Handles:
+ - Ledger summaries
+ - User-specific ledgers
+ - Normalized transaction entries (Decimal-safe)
+"""
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from decimal import Decimal
+from typing import List, Dict, Any, Optional
+from app.db import SessionLocal
 from app.models import LedgerEntry
 from app.dependencies import get_db
-from decimal import Decimal
 
+# ✅ Define FastAPI Router
 router = APIRouter(prefix="/api/ledger", tags=["Ledger"])
 
-# ✅ Get all ledger entries
-@router.get("/entries")
-def get_entries(db: Session = Depends(get_db)):
-    entries = db.query(LedgerEntry).all()
-    return {"count": len(entries), "entries": [e.to_dict() for e in entries]}
 
-# ✅ Get user-specific ledger
-@router.get("/user/{user_id}")
-def get_user_ledger(user_id: int, db: Session = Depends(get_db)):
-    entries = db.query(LedgerEntry).filter(LedgerEntry.user_id == user_id).all()
-    return {"user_id": user_id, "entries": [e.to_dict() for e in entries]}
+# ✅ Normalize float/Decimal inputs safely
+def _normalize_amount(amount) -> Decimal:
+    if amount is None:
+        return Decimal("0.0")
+    if isinstance(amount, (int, float, str)):
+        try:
+            return Decimal(str(amount))
+        except Exception:
+            return Decimal("0.0")
+    if isinstance(amount, Decimal):
+        return amount
+    return Decimal("0.0")
 
-# ✅ Ledger summary for Proof of Reserves–style totals
+
+# ✅ Get complete ledger summary for Proof-of-Reserves
 @router.get("/summary")
-def get_summary(db: Session = Depends(get_db)):
-    total_balance = db.query(func.sum(LedgerEntry.amount)).scalar() or 0
-    total_entries = db.query(LedgerEntry).count()
+def get_summary(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    try:
+        total_balance = db.query(func.sum(LedgerEntry.amount)).scalar() or 0
+        total_entries = db.query(LedgerEntry).count()
+        positive_tx = db.query(func.sum(func.case((LedgerEntry.amount > 0, LedgerEntry.amount), else_=0))).scalar() or 0
+        negative_tx = db.query(func.sum(func.case((LedgerEntry.amount < 0, LedgerEntry.amount), else_=0))).scalar() or 0
+
+        return {
+            "status": "ok",
+            "total_entries": total_entries,
+            "total_balance": float(total_balance),
+            "credits": float(positive_tx),
+            "debits": float(negative_tx),
+            "hash": f"por-{int(total_balance * 1000)}",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ledger summary failed: {str(e)}")
+
+
+# ✅ Get all ledger entries (admin/demo)
+@router.get("/entries")
+def get_all_entries(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    entries = db.query(LedgerEntry).limit(500).all()
     return {
-        "total_balance": total_balance,
-        "total_entries": total_entries,
-        "status": "ok"
+        "count": len(entries),
+        "entries": [
+            {
+                "id": e.id,
+                "user_id": e.user_id,
+                "asset": e.asset,
+                "amount": float(_normalize_amount(e.amount)),
+                "timestamp": str(e.timestamp),
+                "type": e.type,
+                "reference": e.reference or "-",
+            }
+            for e in entries
+        ],
     }
 
-class LedgerError(Exception):
-    pass
 
-
-def _normalize_amount(amount) -> Decimal:
-    try:
-        return Decimal(str(amount))
-    except Exception:
-        raise LedgerError("invalid amount")
-
-
-def create_ledger_entry(
-    db: Session,
-    user_id: int,
-    asset: str,
-    amount: Decimal,
-    entry_type: str,
-    meta: Optional[dict] = None,
-) -> models.LedgerEntry:
-    if asset not in SUPPORTED_ASSETS:
-        raise LedgerError(f"unsupported asset '{asset}'")
-
-    entry = models.LedgerEntry(
-        user_id=user_id,
-        asset=asset,
-        amount=float(amount),
-        type=entry_type,
-        meta=meta or {},
-        created_at=datetime.utcnow(),
+# ✅ Get user-specific ledger (frontend: Wallet history)
+@router.get("/user/{user_id}")
+def get_user_ledger(user_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    entries = (
+        db.query(LedgerEntry)
+        .filter(LedgerEntry.user_id == user_id)
+        .order_by(LedgerEntry.timestamp.desc())
+        .limit(100)
+        .all()
     )
-    db.add(entry)
-    db.flush()
-    return entry
-
-
-def credit_user_balance(
-    db: Session,
-    user_id: int,
-    asset: str,
-    amount: float,
-    reason: str = "credit",
-    meta: Optional[dict] = None,
-    commit: bool = False,
-) -> models.LedgerEntry:
-    amount_dec = _normalize_amount(amount)
-    if amount_dec <= 0:
-        raise LedgerError("credit amount must be positive")
-
-    user = db.execute(
-        select(models.User).where(models.User.id == user_id).with_for_update()
-    ).scalar_one_or_none()
-    if user is None:
-        raise LedgerError("user not found")
-
-    balance_field = f"balance_{asset.lower()}"
-    if not hasattr(user, balance_field):
-        raise LedgerError(f"user missing balance field '{balance_field}'")
-
-    current = Decimal(str(getattr(user, balance_field) or 0))
-    new_balance = current + amount_dec
-    setattr(user, balance_field, float(new_balance))
-
-    entry = create_ledger_entry(db, user_id, asset, amount_dec, reason, meta)
-    entry.balance_after = float(new_balance)
-    db.add(entry)
-
-    if commit:
-        try:
-            db.commit()
-            db.refresh(entry)
-        except SQLAlchemyError as e:
-            db.rollback()
-            raise LedgerError(f"db commit failed: {e}")
-
-    return entry
-
-
-def debit_user_balance(
-    db: Session,
-    user_id: int,
-    asset: str,
-    amount: float,
-    reason: str = "debit",
-    meta: Optional[dict] = None,
-    allow_negative: bool = False,
-    commit: bool = False,
-) -> models.LedgerEntry:
-    amount_dec = _normalize_amount(amount)
-    if amount_dec <= 0:
-        raise LedgerError("debit amount must be positive")
-
-    user = db.execute(
-        select(models.User).where(models.User.id == user_id).with_for_update()
-    ).scalar_one_or_none()
-    if user is None:
-        raise LedgerError("user not found")
-
-    balance_field = f"balance_{asset.lower()}"
-    if not hasattr(user, balance_field):
-        raise LedgerError(f"user missing balance field '{balance_field}'")
-
-    current = Decimal(str(getattr(user, balance_field) or 0))
-    new_balance = current - amount_dec
-    if not allow_negative and new_balance < 0:
-        raise LedgerError("insufficient balance")
-
-    setattr(user, balance_field, float(new_balance))
-
-    entry = create_ledger_entry(db, user_id, asset, -amount_dec, reason, meta)
-    entry.balance_after = float(new_balance)
-    db.add(entry)
-
-    if commit:
-        try:
-            db.commit()
-            db.refresh(entry)
-        except SQLAlchemyError as e:
-            db.rollback()
-            raise LedgerError(f"db commit failed: {e}")
-
-    return entry
-
-
-def transfer_between_users(
-    db: Session,
-    from_user_id: int,
-    to_user_id: int,
-    asset: str,
-    amount: float,
-    meta: Optional[dict] = None,
-    commit: bool = True,
-) -> Tuple[models.LedgerEntry, models.LedgerEntry]:
-    if from_user_id == to_user_id:
-        raise LedgerError("cannot transfer to same user")
-    amount_dec = _normalize_amount(amount)
-    if amount_dec <= 0:
-        raise LedgerError("transfer amount must be positive")
-
-    first, second = (from_user_id, to_user_id) if from_user_id < to_user_id else (to_user_id, from_user_id)
-
-    users = db.execute(
-        select(models.User).where(models.User.id.in_([first, second])).with_for_update()
-    ).scalars().all()
-
-    if len(users) != 2:
-        raise LedgerError("one or both users not found")
-
-    try:
-        debit_entry = debit_user_balance(db, from_user_id, asset, float(amount_dec), reason="transfer_out", meta={**(meta or {}), "to": to_user_id}, commit=False)
-        credit_entry = credit_user_balance(db, to_user_id, asset, float(amount_dec), reason="transfer_in", meta={**(meta or {}), "from": from_user_id}, commit=False)
-
-        if commit:
-            db.commit()
-            db.refresh(debit_entry)
-            db.refresh(credit_entry)
-
-        return debit_entry, credit_entry
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise LedgerError(f"transfer failed: {e}")
-
-
-def get_recent_ledger(db: Session, user_id: int, limit: int = 50) -> List[models.LedgerEntry]:
-    q = select(models.LedgerEntry).where(models.LedgerEntry.user_id == user_id).order_by(models.LedgerEntry.created_at.desc()).limit(limit)
-    return db.execute(q).scalars().all()
-
-
-def log_trade(db: Session, user_id: Optional[int], asset: str, amount: float, side: str, price: Optional[float] = None, meta: Optional[dict] = None) -> models.LedgerEntry:
-    entry_meta = meta.copy() if isinstance(meta, dict) else {}
-    entry_meta.update({"side": side, "price": price})
-    entry = create_ledger_entry(db, user_id if user_id is not None else 0, asset, Decimal(str(amount)), entry_type="trade", meta=entry_meta)
-    db.commit()
-    db.refresh(entry)
-    return entry
-
-
-def get_recent_trades(db: Session, symbol: Optional[str] = None, limit: int = 100) -> List[Any]:
-    try:
-        q = select(models.SpotTrade)
-        if symbol:
-            q = q.where(models.SpotTrade.pair == symbol)
-        q = q.order_by(models.SpotTrade.timestamp.desc()).limit(limit)
-        return db.execute(q).scalars().all()
-    except Exception:
-        return []
-
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"No ledger found for user {user_id}")
+    return {
+        "user_id": user_id,
+        "count": len(entries),
+        "entries": [
+            {
+                "asset": e.asset,
+                "amount": float(_normalize_amount(e.amount)),
+                "timestamp": str(e.timestamp),
+                "type": e.type,
+                "reference": e.reference or "-",
+            }
+            for e in entries
+        ],
+    }
