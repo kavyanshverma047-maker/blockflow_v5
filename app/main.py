@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseSettings
+from sqlalchemy import create_engine
 
 # Add project path so Render or other runners find subpackages reliably
 ROOT = os.path.dirname(os.path.abspath(__file__))
