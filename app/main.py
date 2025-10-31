@@ -35,7 +35,8 @@ from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from loguru import logger
-
+from fastapi import BackgroundTasks
+from app.seed_massive import seed_massive_data
 # ---------------------------
 # Local Imports
 # ---------------------------
@@ -187,7 +188,18 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         logger.exception("Error handling request %s %s: %s", request.method, request.url.path, str(e))
         raise
-
+@app.post("/admin/seed-massive")
+async def start_massive_seed(background_tasks: BackgroundTasks):
+    """
+    Trigger background task to generate 5M demo users + trades
+    Use this endpoint for investor demo prep
+    """
+    background_tasks.add_task(seed_massive_data)
+    return {
+        "status": "started",
+        "target": "5 million demo users + trades",
+        "message": "Monitor Render logs for seeding progress",
+    }
 # ---------- Database / ORM initialization ----------
 # DB detection
 def detect_db_url() -> str:
