@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
 from app.models import Base, User, SpotTrade, MarginTrade, FuturesUsdmTrade, P2POrder
-from app.db import DATABASE_URL, engine, SessionLocal
+from app.main import DATABASE_URL, engine, SessionLocal
 
 # Configuration
 TARGET_USERS = 10_000_000  # 10 million users
