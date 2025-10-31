@@ -11,7 +11,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
 from app.models import Base, User, SpotTrade, MarginTrade, FuturesUsdmTrade, P2POrder
-from app.main import DATABASE_URL, engine, SessionLocal
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+import os
+
+# ✅ Pull from environment variable
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ✅ Create independent SQLAlchemy session
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 # Configuration
 TARGET_USERS = 10_000_000  # 10 million users
