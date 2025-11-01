@@ -37,6 +37,8 @@ from pydantic_settings import BaseSettings
 from loguru import logger
 from fastapi import BackgroundTasks
 from app.seed_massive import seed_massive_data
+from app.routers import ws_market, ws_user
+from app.engine import simulate_markets, live_stats
 # ---------------------------
 # Local Imports
 # ---------------------------
@@ -1022,6 +1024,31 @@ def keep_alive():
 if os.getenv("ENV", "production") == "production":
     threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("🟢 Keep-alive thread started")
+# ================================================================
+# 🧩 REAL-TIME ENGINE: Market Simulator + Live Stats + WebSockets
+# ================================================================
+import asyncio
+
+try:
+    # Import real-time modules
+    from app.engine import simulate_markets, live_stats
+    from app.routers import ws_market, ws_user
+
+    # Include new WebSocket routers
+    app.include_router(ws_market.router)
+    app.include_router(ws_user.router)
+
+    @app.on_event("startup")
+    async def start_background_simulators():
+        """
+        Auto-starts real-time simulators and stats updater at backend launch.
+        """
+        asyncio.create_task(simulate_markets.simulate_markets())
+        asyncio.create_task(live_stats.update_live_stats())
+        print("✅ Real-time simulation engines started (markets + stats)")
+
+except Exception as e:
+    logger.warning(f"⚠️ Could not start real-time simulators: {e}")
 
 # --------------------------
 # End of main.py
