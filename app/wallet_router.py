@@ -56,7 +56,14 @@ def withdraw(req: AmountRequest, db: Session = Depends(get_db)):
 @router.post("/transfer")
 def transfer(req: TransferRequest, db: Session = Depends(get_db)):
     try:
-        result = service.transfer(db, req.from_user_id, req.to_user_id, req.asset, Decimal(req.amount), req.meta)
+        from sqlalchemy import text
+        result = db.execute(
+            text("SELECT asset, SUM(amount) FROM wallet_transactions WHERE user_id=:uid GROUP BY asset"),
+            {"uid": user_id}
+        )
+
+ 
+
         return {"status": "success", "result": result}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
