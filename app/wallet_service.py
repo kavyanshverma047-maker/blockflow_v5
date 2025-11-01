@@ -49,3 +49,9 @@ class WalletService:
     def get_ledger(self, db: Session, user_id: int, limit: int = 100, offset: int = 0) -> List[models.LedgerEntry]:
         q = db.query(models.LedgerEntry).filter(models.LedgerEntry.user_id == user_id).order_by(models.LedgerEntry.created_at.desc()).limit(limit).offset(offset)
         return q.all()
+    def get_all_balances(self, db: Session, user_id: int):
+    rows = db.execute(
+        "SELECT asset, SUM(amount) AS balance FROM ledger WHERE user_id = :uid GROUP BY asset",
+        {"uid": user_id}
+    )
+    return [{"asset": r[0], "free": str(r[1]), "locked": "0"} for r in rows]
