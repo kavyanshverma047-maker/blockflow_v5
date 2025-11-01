@@ -1,70 +1,114 @@
 # app/wallet_service.py
-from typing import Optional, List
-from decimal import Decimal
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from app import models
-from app import ledger_service
-
+from sqlalchemy import text
+from datetime import datetime
+from app.models import WalletTransaction, User
 
 class WalletService:
-    def _ensure_user_exists(self, db: Session, user_id: int) -> models.User:
-        user = db.query(models.User).filter(models.User.id == user_id).first()
-        if not user:
-            raise ValueError(f"user {user_id} not found")
-        return user
+    def __init__(self, db: Session):
+        self.db = db
 
-    def deposit(self, db: Session, user_id: int, asset: str, amount: Decimal, meta: Optional[dict] = None):
-        if amount <= 0:
-            raise ValueError("Deposit amount must be > 0")
-        self._ensure_user_exists(db, user_id)
-        entry = ledger_service.credit_user_balance(
-            db, user_id, asset, float(amount), reason="deposit", meta=meta, commit=True
+    # ✅ Add funds to wallet
+    def credit(self, user_id: int, asset: str, amount: float):
+        tx = WalletTransaction(
+            user_id=user_id,
+            asset=asset,
+            amount=amount,
+            tx_type="credit",
+            timestamp=datetime.utcnow()
         )
-        return entry
+        self.db.add(tx)
+        self.db.commit()
+        self.db.refresh(tx)
+        return tx
 
-    def withdraw(self, db: Session, user_id: int, asset: str, amount: Decimal, meta: Optional[dict] = None):
-        if amount <= 0:
-            raise ValueError("Withdraw amount must be > 0")
-        self._ensure_user_exists(db, user_id)
-        entry = ledger_service.debit_user_balance(
-            db, user_id, asset, float(amount), reason="withdraw", meta=meta, commit=True
+    # ✅ Deduct funds from wallet
+    def debit(self, user_id: int, asset: str, amount: float):
+        tx = WalletTransaction(
+            user_id=user_id,
+            asset=asset,
+            amount=-abs(amount),
+            tx_type="debit",
+            timestamp=datetime.utcnow()
         )
-        return entry
+        self.db.add(tx)
+        self.db.commit()
+        self.db.refresh(tx)
+        return tx
 
-    def transfer(self, db: Session, from_user_id: int, to_user_id: int, asset: str, amount: Decimal, meta: Optional[dict] = None):
-        if amount <= 0:
-            raise ValueError("Transfer amount must be > 0")
-        if from_user_id == to_user_id:
-            raise ValueError("Sender and receiver cannot be the same")
-        self._ensure_user_exists(db, from_user_id)
-        self._ensure_user_exists(db, to_user_id)
-        debit_entry, credit_entry = ledger_service.transfer_between_users(
-            db, from_user_id, to_user_id, asset, float(amount), meta=meta, commit=True
+    # ✅ Get all balances for user (SQLAlchemy 2.x safe)
+    def get_all_balances(self, user_id: int):
+        """
+        Returns a list of {asset, balance} for a specific user.
+        Uses text() to wrap SQL string for SQLAlchemy 2.x compliance.
+        """
+        result = self.db.execute(
+            text("""
+                SELECT asset, SUM(amount) AS balance
+                FROM wallet_transactions
+                WHERE user_id = :uid
+                GROUP BY asset
+            """),
+            {"uid": user_id}
         )
-        return {"from_entry": debit_entry.id, "to_entry": credit_entry.id}
+        balances = [
+            {"asset": row[0], "balance": float(row[1]) if row[1] is not None else 0.0}
+            for row in result.fetchall()
+        ]
+        return balances
 
-    def get_balance(self, db: Session, user_id: int, asset: str) -> Decimal:
-        q = db.query(func.coalesce(func.sum(models.LedgerEntry.amount), 0)).filter(
-            models.LedgerEntry.user_id == user_id,
-            models.LedgerEntry.asset == asset,
+    # ✅ Ledger of all transactions
+    def get_ledger(self, user_id: int):
+        """
+        Returns a transaction history for the user.
+        """
+        transactions = (
+            self.db.query(WalletTransaction)
+            .filter(WalletTransaction.user_id == user_id)
+            .order_by(WalletTransaction.timestamp.desc())
+            .limit(100)
+            .all()
         )
-        total = q.scalar()
-        return Decimal(total or 0)
 
-    def get_ledger(self, db: Session, user_id: int, limit: int = 100, offset: int = 0) -> List[models.LedgerEntry]:
-        q = (
-            db.query(models.LedgerEntry)
-            .filter(models.LedgerEntry.user_id == user_id)
-            .order_by(models.LedgerEntry.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-        return q.all()
+        return [
+            {
+                "asset": tx.asset,
+                "amount": tx.amount,
+                "type": tx.tx_type,
+                "timestamp": tx.timestamp.isoformat(),
+            }
+            for tx in transactions
+        ]
 
-    def get_all_balances(self, db: Session, user_id: int):
-        rows = db.execute(
-            "SELECT asset, SUM(amount) AS balance FROM ledger WHERE user_id = :uid GROUP BY asset",
-            {"uid": user_id},
+    # ✅ Transfer between users
+    def transfer(self, sender_id: int, receiver_id: int, asset: str, amount: float):
+        """
+        Performs a transfer: debit sender and credit receiver atomically.
+        """
+        try:
+            sender_balance = self.get_user_balance(sender_id, asset)
+            if sender_balance < amount:
+                raise ValueError("Insufficient funds")
+
+            self.debit(sender_id, asset, amount)
+            self.credit(receiver_id, asset, amount)
+            self.db.commit()
+            return {"status": "success", "amount": amount, "asset": asset}
+        except Exception as e:
+            self.db.rollback()
+            raise e
+
+    # ✅ Helper: get single balance
+    def get_user_balance(self, user_id: int, asset: str) -> float:
+        """
+        Returns the balance for one asset.
+        """
+        result = self.db.execute(
+            text("""
+                SELECT SUM(amount) FROM wallet_transactions
+                WHERE user_id = :uid AND asset = :asset
+            """),
+            {"uid": user_id, "asset": asset}
         )
-        return [{"asset": r[0], "free": str(r[1]), "locked": "0"} for r in rows]
+        balance = result.scalar()
+        return float(balance) if balance else 0.0
