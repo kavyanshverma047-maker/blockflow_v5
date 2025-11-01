@@ -18,14 +18,18 @@ class WalletService:
         if amount <= 0:
             raise ValueError("Deposit amount must be > 0")
         self._ensure_user_exists(db, user_id)
-        entry = ledger_service.credit_user_balance(db, user_id, asset, float(amount), reason="deposit", meta=meta, commit=True)
+        entry = ledger_service.credit_user_balance(
+            db, user_id, asset, float(amount), reason="deposit", meta=meta, commit=True
+        )
         return entry
 
     def withdraw(self, db: Session, user_id: int, asset: str, amount: Decimal, meta: Optional[dict] = None):
         if amount <= 0:
             raise ValueError("Withdraw amount must be > 0")
         self._ensure_user_exists(db, user_id)
-        entry = ledger_service.debit_user_balance(db, user_id, asset, float(amount), reason="withdraw", meta=meta, commit=True)
+        entry = ledger_service.debit_user_balance(
+            db, user_id, asset, float(amount), reason="withdraw", meta=meta, commit=True
+        )
         return entry
 
     def transfer(self, db: Session, from_user_id: int, to_user_id: int, asset: str, amount: Decimal, meta: Optional[dict] = None):
@@ -35,23 +39,32 @@ class WalletService:
             raise ValueError("Sender and receiver cannot be the same")
         self._ensure_user_exists(db, from_user_id)
         self._ensure_user_exists(db, to_user_id)
-        debit_entry, credit_entry = ledger_service.transfer_between_users(db, from_user_id, to_user_id, asset, float(amount), meta=meta, commit=True)
+        debit_entry, credit_entry = ledger_service.transfer_between_users(
+            db, from_user_id, to_user_id, asset, float(amount), meta=meta, commit=True
+        )
         return {"from_entry": debit_entry.id, "to_entry": credit_entry.id}
 
     def get_balance(self, db: Session, user_id: int, asset: str) -> Decimal:
         q = db.query(func.coalesce(func.sum(models.LedgerEntry.amount), 0)).filter(
             models.LedgerEntry.user_id == user_id,
-            models.LedgerEntry.asset == asset
+            models.LedgerEntry.asset == asset,
         )
         total = q.scalar()
         return Decimal(total or 0)
 
     def get_ledger(self, db: Session, user_id: int, limit: int = 100, offset: int = 0) -> List[models.LedgerEntry]:
-        q = db.query(models.LedgerEntry).filter(models.LedgerEntry.user_id == user_id).order_by(models.LedgerEntry.created_at.desc()).limit(limit).offset(offset)
+        q = (
+            db.query(models.LedgerEntry)
+            .filter(models.LedgerEntry.user_id == user_id)
+            .order_by(models.LedgerEntry.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         return q.all()
+
     def get_all_balances(self, db: Session, user_id: int):
-    rows = db.execute(
-        "SELECT asset, SUM(amount) AS balance FROM ledger WHERE user_id = :uid GROUP BY asset",
-        {"uid": user_id}
-    )
-    return [{"asset": r[0], "free": str(r[1]), "locked": "0"} for r in rows]
+        rows = db.execute(
+            "SELECT asset, SUM(amount) AS balance FROM ledger WHERE user_id = :uid GROUP BY asset",
+            {"uid": user_id},
+        )
+        return [{"asset": r[0], "free": str(r[1]), "locked": "0"} for r in rows]
