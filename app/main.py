@@ -104,37 +104,42 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 # ---------------------------
 # Include Routers (AFTER app creation)
 # ---------------------------
-# ✅ Import routers AFTER app is created
-try:
-    from app.wallet_router import router as wallet_router
-    app.include_router(wallet_router, prefix="/api")
-except ImportError as e:
-    logger.warning(f"⚠️ Could not import wallet_router: {e}")
+# ✅ WALLET ROUTER - FORCE LOAD
+from app.wallet_router import router as wallet_router
+app.include_router(wallet_router, prefix="/api/wallet")
+logger.info("✅ Wallet router registered at /api/wallet")
 
+# ✅ AUTH ROUTER
 try:
     from app.auth_service import router as auth_router
     app.include_router(auth_router, prefix="/api")
+    logger.info("✅ Auth router registered")
 except ImportError as e:
     logger.warning(f"⚠️ Could not import auth_service: {e}")
 
+# ✅ METRICS ROUTER
 try:
     from app.metrics_service import router as metrics_router
     app.include_router(metrics_router, prefix="/api")
+    logger.info("✅ Metrics router registered")
 except ImportError as e:
     logger.warning(f"⚠️ Could not import metrics_service: {e}")
 
+# ✅ COMPLIANCE ROUTER
 try:
     from app.compliance_service import router as compliance_router
     app.include_router(compliance_router, prefix="/api")
+    logger.info("✅ Compliance router registered")
 except ImportError as e:
     logger.warning(f"⚠️ Could not import compliance_service: {e}")
 
+# ✅ ADMIN ROUTER
 try:
     from app.api import admin_router
     app.include_router(admin_router.router, prefix="/api")
+    logger.info("✅ Admin router registered")
 except ImportError as e:
     logger.warning(f"⚠️ Could not import admin_router: {e}")
-
 
 # ---------------------------
 # WebSocket (Import manager from service)
