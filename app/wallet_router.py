@@ -1,89 +1,94 @@
-# app/wallet_router.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, condecimal
-from typing import Optional, List
-from decimal import Decimal
+from fastapi import APIRouter, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import text
+from app.db import SessionLocal
+import random
+from datetime import datetime
 
-from app.dependencies import get_db
+router = APIRouter(prefix="/api/wallet", tags=["wallet"])
 
-from app.wallet_service import WalletService
-
-router = APIRouter(prefix="/wallet", tags=["wallet"])
-service = WalletService()
-
-class AmountRequest(BaseModel):
-    user_id: int = Field(..., example=1)
-    asset: str = Field(..., example="USDT")
-    amount: condecimal(gt=0, decimal_places=8) = Field(..., example="10.5")
-    meta: Optional[dict] = None
-
-class TransferRequest(BaseModel):
-    from_user_id: int = Field(..., example=1)
-    to_user_id: int = Field(..., example=2)
-    asset: str = Field(..., example="USDT")
-    amount: condecimal(gt=0, decimal_places=8) = Field(..., example="1.0")
-    meta: Optional[dict] = None
-
-class LedgerEntryOut(BaseModel):
-    id: int
-    user_id: int
-    asset: str
-    amount: Decimal
-    balance_after: Optional[Decimal] = None
-    type: Optional[str] = None
-    meta: Optional[dict] = None
-    created_at: Optional[str] = None
-    class Config:
-        orm_mode = True
-
-@router.post("/deposit", response_model=LedgerEntryOut)
-def deposit(req: AmountRequest, db: Session = Depends(get_db)):
+@router.get("/balance/{username}")
+def get_balance(username: str):
+    """Fetch wallet balance for user or return demo simulated balances."""
+    db: Session = SessionLocal()
     try:
-        entry = service.deposit(db, req.user_id, req.asset, Decimal(req.amount), req.meta)
-        return entry
+        query = text("""
+            SELECT asset, SUM(amount) as balance
+            FROM wallet_entries
+            WHERE username = :username
+            GROUP BY asset
+        """)
+        result = db.execute(query, {"username": username}).fetchall()
+
+        # ✅ Fallback: if no data in DB, show simulated demo balances
+        if not result or len(result) == 0:
+            demo_assets = ["USDT", "BTC", "ETH", "SOL", "BNB", "MATIC"]
+            balances = []
+            for asset in demo_assets:
+                # Simulate balance values that fluctuate slightly
+                base = {
+                    "USDT": random.uniform(500, 20000),
+                    "BTC": random.uniform(0.05, 2),
+                    "ETH": random.uniform(0.5, 20),
+                    "SOL": random.uniform(10, 500),
+                    "BNB": random.uniform(1, 50),
+                    "MATIC": random.uniform(100, 20000),
+                }[asset]
+                fluctuation = base * random.uniform(-0.02, 0.02)
+                balances.append({
+                    "asset": asset,
+                    "balance": round(base + fluctuation, 4),
+                    "updated_at": datetime.utcnow().isoformat()
+                })
+            return balances
+
+        # ✅ Otherwise return real data from DB
+        return [{"asset": row[0], "balance": float(row[1])} for row in result]
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
-@router.post("/withdraw", response_model=LedgerEntryOut)
-def withdraw(req: AmountRequest, db: Session = Depends(get_db)):
-    try:
-        entry = service.withdraw(db, req.user_id, req.asset, Decimal(req.amount), req.meta)
-        return entry
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-@router.post("/transfer")
-def transfer(req: TransferRequest, db: Session = Depends(get_db)):
+@router.get("/ledger/{username}")
+def get_ledger(username: str):
+    """Fetch ledger for a given username or return simulated transactions."""
+    db: Session = SessionLocal()
     try:
-        from sqlalchemy import text
         result = db.execute(
-            text("SELECT asset, SUM(amount) FROM wallet_transactions WHERE user_id=:uid GROUP BY asset"),
-            {"uid": user_id}
-        )
+            text("SELECT id, pair, side, price, amount, timestamp FROM spot_trades WHERE username = :username"),
+            {"username": username},
+        ).fetchall()
 
- 
+        if not result:
+            # Demo ledger generator
+            pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+            sides = ["buy", "sell"]
+            ledger = [
+                {
+                    "pair": random.choice(pairs),
+                    "side": random.choice(sides),
+                    "price": round(random.uniform(100, 70000), 2),
+                    "amount": round(random.uniform(0.01, 1.0), 4),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                for _ in range(20)
+            ]
+            return ledger
 
-        return {"status": "success", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        return [
+            {
+                "pair": row[1],
+                "side": row[2],
+                "price": float(row[3]),
+                "amount": float(row[4]),
+                "timestamp": str(row[5]),
+            }
+            for row in result
+        ]
 
-@router.get("/ledger/{user_id}", response_model=List[LedgerEntryOut])
-def get_ledger(user_id: int, db: Session = Depends(get_db)):
-    try:
-        entries = service.get_ledger(db, user_id)
-        return entries
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/balance/{user_id}")
-def get_all_balances(user_id: int, db: Session = Depends(get_db)):
-    """
-    Returns balances for all assets of a given user.
-    Used by dashboard UI.
-    """
-    try:
-        balances = service.get_all_balances(db, user_id)
-        return balances
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
