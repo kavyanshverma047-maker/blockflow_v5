@@ -69,10 +69,14 @@ def get_ledger(user_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/balance/{user_id}/{asset}")
-def get_balance(user_id: int, asset: str, db: Session = Depends(get_db)):
+@router.get("/balance/{user_id}")
+def get_all_balances(user_id: int, db: Session = Depends(get_db)):
+    """
+    Returns balances for all assets of a given user.
+    Used by dashboard UI.
+    """
     try:
-        balance = service.get_balance(db, user_id, asset)
-        return {"user_id": user_id, "asset": asset, "balance": str(balance)}
+        balances = service.get_all_balances(db, user_id)
+        return balances
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
