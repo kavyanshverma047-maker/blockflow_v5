@@ -10,3 +10,5 @@ venv/
 *.sqlite3
 blockflow.db
 app/FETCH_HEAD
+__pycache__/
+*.pyc
