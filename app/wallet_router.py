@@ -5,7 +5,8 @@ from app.db import SessionLocal
 import random
 from datetime import datetime
 
-router = APIRouter(prefix="/api/wallet", tags=["wallet"])
+# ✅ NO PREFIX HERE - we add it in main.py
+router = APIRouter(tags=["wallet"])
 
 @router.get("/balance/{username}")
 def get_balance(username: str):
