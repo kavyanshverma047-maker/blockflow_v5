@@ -1,0 +1,26 @@
+{
+  "python.analysis.typeCheckingMode": "basic",
+  "python.linting.enabled": true,
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportUnusedImport": "information",
+    "reportUnusedVariable": "information",
+    "reportPrivateImportUsage": "none",
+    "reportGeneralTypeIssues": "none",
+    "reportMissingModuleSource": "none"
+  },
+  "python.formatting.provider": "black",
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.mypy_cache": true,
+    "**/.pytest_cache": true
+  },
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": true
+  },
+  "python.analysis.autoImportCompletions": false,
+  "python.analysis.useLibraryCodeForTypes": false,
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.defaultInterpreterPath": "E:\\blockflow_v5-main\\.venv\\Scripts\\python.exe"
+}
