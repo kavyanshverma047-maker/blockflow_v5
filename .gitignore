@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+.env
+.env/
+
+# IDE configs
+.idea/
+.vscode/
+
+# Local DBs
+*.sqlite3
+blockflow.db
+blockflow_v5.db
+
+# Other temporary files
+app/FETCH_HEAD
+blockflow.db
+blockflow_backup.sql
