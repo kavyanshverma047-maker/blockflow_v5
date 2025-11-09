@@ -74,6 +74,14 @@ app = FastAPI(
     description="Wallet, Ledger, Spot, Futures, Margin, Options, Auth, Admin",
     version="2.0-Brahmastra"
 )
+# --- Live Stats Background Task ---
+import asyncio
+from app.engine.live_stats import update_live_stats
+
+@app.on_event("startup")
+async def start_background_tasks():
+    asyncio.create_task(update_live_stats())
+    print("✅ Live Stats background updater started.")
 
 # ---------------------------
 # Middleware (FIXED FOR LOCALHOST + VERCEL)
