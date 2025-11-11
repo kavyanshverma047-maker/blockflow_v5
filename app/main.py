@@ -77,6 +77,8 @@ app = FastAPI(
 # --- Live Stats Background Task ---
 import asyncio
 from app.engine.live_stats import update_live_stats
+# near your startup code
+asyncio.create_task(simulate_markets.simulate_markets_loop(ws_manager.broadcast_json))
 
 @app.on_event("startup")
 async def start_background_tasks():
@@ -244,9 +246,18 @@ async def websocket_market_feed(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            await websocket.receive_text()
+            # Simulated BTCUSDT price feed
+            data = {
+                "pair": "BTCUSDT",
+                "price": round(105000 + random.uniform(-300, 300), 2),
+                "volume": round(random.uniform(1, 5), 2),
+                "change": round(random.uniform(-0.5, 0.5), 2),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await websocket.send_json(data)
+            await asyncio.sleep(2)
     except WebSocketDisconnect:
-        await websocket.close()
+        print("🔌 Market feed disconnected")
 
 # --- WebSocket Market Feed ---
 try:
