@@ -76,14 +76,16 @@ app = FastAPI(
 )
 # --- Live Stats Background Task ---
 import asyncio
-from app.engine.live_stats import update_live_stats
-# near your startup code
-asyncio.create_task(simulate_markets.simulate_markets_loop(ws_manager.broadcast_json))
+from app.engine import simulate_markets
+from app.engine.ws_manager import ws_manager  # adjust path if different
+
+app = FastAPI()
 
 @app.on_event("startup")
-async def start_background_tasks():
-    asyncio.create_task(update_live_stats())
-    print("✅ Live Stats background updater started.")
+async def start_market_simulation():
+    """Start background simulator and stream to WebSocket manager."""
+    asyncio.create_task(simulate_markets.simulate_markets_loop(ws_manager.broadcast_json))
+    print("[✅] Market simulator connected to WebSocket manager.")
 
 # ---------------------------
 # Middleware (FIXED FOR LOCALHOST + VERCEL)
