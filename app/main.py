@@ -1034,7 +1034,6 @@ async def verify_db_schema():
     except Exception as e:
         logger.error(f"DB verify error: {e}")
 
-@app.on_event("startup")
 async def start_backend_services():
     """Unified startup for database, simulators, heartbeat."""
     logger.info("🚀 Starting Blockflow real-time backend...")
