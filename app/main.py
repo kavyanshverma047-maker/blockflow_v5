@@ -77,7 +77,6 @@ app = FastAPI(
 # --- Live Stats Background Task ---
 import asyncio
 from app.engine import simulate_markets
-from app.engine.ws_manager import ws_manager  # adjust path if different
 
 app = FastAPI()
 
