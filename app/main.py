@@ -1010,11 +1010,17 @@ async def cors_preflight(p: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=True)
+from app.routers.rail import router as rail_router
+from app.routers.compliance import router as compliance_router
+from app.routers.system_stats import router as system_stats_router
 
+app.include_router(rail_router)
+app.include_router(compliance_router)
+app.include_router(system_stats_router)
+from app.routers.rail import router as rail_router
+from app.routers.compliance import router as compliance_router
+from app.routers.system_stats import router as system_stats_router
 
-
-
-
-from app.routers.system_stats import router as stats_router
-
-app.include_router(stats_router)
+app.include_router(rail_router)
+app.include_router(compliance_router)
+app.include_router(system_stats_router)
