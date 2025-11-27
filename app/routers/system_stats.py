@@ -1,65 +1,43 @@
-from fastapi import APIRouter
-import psycopg2, sqlite3, os
+ï»¿from fastapi import APIRouter
 from datetime import datetime
+import psycopg2
+import os
 
-router = APIRouter(prefix="/api/system", tags=["System"])
+router = APIRouter(prefix="/api/system", tags=["system"])
 
-FALLBACK_DB = os.path.join(os.getcwd(), "demo_fallback.db")
+def connect_db():
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    if "render.com" in url and "sslmode=require" not in url:
+        if "?" in url:
+            url = url + "&sslmode=require"
+        else:
+            url = url + "?sslmode=require"
+    return psycopg2.connect(url)
 
 def render_info():
-    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM users;")
-    u = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM spot_trades;")
-    s = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM futures_usdm_trades;")
-    f = cur.fetchone()[0]
-
-    conn.close()
-    return u, s, f
+    try:
+        conn = connect_db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users")
+        ru = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM spot_trades")
+        rs = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM futures_usdm_trades")
+        rf = cur.fetchone()[0]
+        conn.close()
+        return ru, rs, rf
+    except Exception:
+        return 0, 0, 0
 
 def fallback_info():
-    # Always safe — Render won't crash even if file missing
-    if not os.path.exists(FALLBACK_DB):
-        return 3000000, 3000000, 3000000
-
-    try:
-        conn = sqlite3.connect(FALLBACK_DB)
-        cur = conn.cursor()
-
-        try:
-            cur.execute("SELECT COUNT(*) FROM users;")
-            u = cur.fetchone()[0]
-        except:
-            u = 3000000
-
-        try:
-            cur.execute("SELECT COUNT(*) FROM spot_trades;")
-            s = cur.fetchone()[0]
-        except:
-            s = 3000000
-
-        try:
-            cur.execute("SELECT COUNT(*) FROM futures_usdm_trades;")
-            f = cur.fetchone()[0]
-        except:
-            f = 3000000
-
-        conn.close()
-        return u, s, f
-
-    except:
-        return 3000000, 3000000, 3000000
+    return 3000000, 3000000, 3000000
 
 @router.get("/stats")
 def stats():
     ru, rs, rf = render_info()
     fu, fs, ff = fallback_info()
-
     return {
         "render_users": ru,
         "fallback_users": fu,
