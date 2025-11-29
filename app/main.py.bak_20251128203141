@@ -1,6 +1,15 @@
+﻿# === INJECTED: CORE IMPORTS ===
+try:
+    from app.core.market_engine import MarketEngine
+    from app.core.ws_manager import WebSocketManager
+    from app.routers import health as health_router
+except Exception as e:
+    # import errors will show at runtime; keep original app running where possible
+    print('INJECT IMPORT ERROR', e)
+# === END INJECTED ===
 # app/main.py
 """
-Blockflow Exchange – Production Backend v3.2 (Unified, Fully Fixed)
+Blockflow Exchange â€“ Production Backend v3.2 (Unified, Fully Fixed)
 ===================================================================
 
 Features:
@@ -70,7 +79,16 @@ from app.auth_service import AuthService
 # FASTAPI APP
 # ====================
 app = FastAPI(
-    title="Blockflow Exchange",
+
+# === INJECTED: CORE INIT ===
+# Initialize MarketEngine and WebSocketManager singletons for demo
+try:
+    engine = MarketEngine()
+    ws_manager_global = WebSocketManager()
+    print('MarketEngine & WebSocketManager initialized (demo)')
+except Exception as e:
+    print('INIT ERROR', e)
+# === END INJECTED ===    title="Blockflow Exchange",
     version="3.2.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -947,7 +965,7 @@ async def http_handler(req: Request, exc: HTTPException):
 # ====================
 @app.on_event("startup")
 async def startup():
-    logger.info("🚀 Blockflow Backend v3.2 Started")
+    logger.info("ðŸš€ Blockflow Backend v3.2 Started")
 
     try:
         db = SessionLocal()
@@ -962,7 +980,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    logger.info("🛑 Shutting down Blockflow...")
+    logger.info("ðŸ›‘ Shutting down Blockflow...")
     async with ws_manager.lock:
         for ws in ws_manager.connections:
             try:
@@ -1088,3 +1106,77 @@ async def websocket_endpoint(websocket: WebSocket):
         except: pass
         raise
 # === END AUTO-INJECTED-WEBSOCKET-ENDPOINT ===
+
+
+# === INJECTED: UNIFIED WS ENDPOINT ===
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio, os
+@app.websocket('/ws')
+async def unified_ws(websocket: WebSocket):
+    # channel via query param ?channel=market
+    channel = websocket.scope.get('query_string', b'').decode()
+    # simple parse
+    ch = "market"
+    if "channel=" in channel:
+        try:
+            ch = channel.split("channel=")[1].split("&")[0]
+        except: ch="market"
+    await ws_manager_global.subscribe(websocket, ch)
+    q = engine.register_queue(ch)
+    try:
+        # forward queue to websocket
+        forward_task = asyncio.create_task(ws_manager_global.start_queue_forwarder(websocket, q, ch))
+        # keep receiving pings from client
+        while True:
+            try:
+                msg = await websocket.receive_text()
+                # echo for now
+                await websocket.send_json({"type":"echo","data":msg,"ts":int(datetime.utcnow().timestamp()*1000)})
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                await asyncio.sleep(0.1)
+    finally:
+        try:
+            forward_task.cancel()
+        except: pass
+        await ws_manager_global.unsubscribe(websocket)
+        engine.unregister_queue(ch, q)
+# === END INJECTED ===
+# === INJECTED: STARTUP DEMO ===
+import asyncio, os
+from datetime import datetime
+
+# mount health router
+try:
+    health_router.set_deps(engine, ws_manager_global)
+    app.include_router(health_router.router)
+except Exception as e:
+    print('HEALTH MOUNT ERROR', e)
+
+@app.on_event('startup')
+async def _demo_startup():
+    print('Demo startup checks...')
+    # basic engine check
+    try:
+        snap = engine.get_snapshot('BTCUSDT')
+        print('MarketEngine snapshot ok, bids:', len(snap['orderbook']['bids']))
+    except Exception as e:
+        print('Engine startup error', e)
+    # start demo simulator
+    async def _sim():
+        import random, time
+        bases = {'BTCUSDT':95000.0,'ETHUSDT':3500.0,'SOLUSDT':180.0}
+        while True:
+            try:
+                for p in bases.keys():
+                    delta = random.uniform(-0.001,0.001)
+                    price = round(bases[p]*(1+delta),2)
+                    bases[p] = bases[p]*0.995 + price*0.005
+                    engine.apply_trade({'pair':p,'side': random.choice(['buy','sell']), 'price': price, 'amount': round(random.uniform(0.001,0.02),6), 'timestamp': datetime.utcnow().isoformat()})
+                await asyncio.sleep(0.8)
+            except Exception as e:
+                print('Simulator error', e)
+                await asyncio.sleep(2)
+    asyncio.create_task(_sim())
+# === END INJECTED ===

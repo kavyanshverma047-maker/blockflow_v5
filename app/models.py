@@ -1,13 +1,14 @@
 ﻿# app/models.py
 """
-Blockflow Exchange - Database Models (FIXED v3.1)
+Blockflow Exchange - Database Models (FIXED v3.2)
 ==================================================
 Production SQLAlchemy ORM models for crypto exchange backend.
 Includes: User, UserAsset, RefreshToken, ApiKey, LedgerEntry, SpotTrade, FuturesUsdmTrade
+FIXED: Ledger and Wallet models for double-entry accounting
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Numeric, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, Numeric, DateTime, Text, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -193,3 +194,65 @@ class FuturesUsdmTrade(Base):
 
     def __repr__(self):
         return f"<FuturesUsdmTrade(id={self.id}, username='{self.username}', pair='{self.pair}', leverage={self.leverage}x)>"
+
+
+# ============================================================================
+# DOUBLE-ENTRY ACCOUNTING SYSTEM (FIXED)
+# ============================================================================
+
+class Ledger(Base):
+    """
+    Double-entry ledger for all financial transactions.
+    Every transaction has multiple entries that must balance (sum to zero).
+    
+    Account format: 'user:{user_id}:{currency}:{type}'
+    Examples:
+        - user:1:INR:available
+        - user:1:INR:reserved
+        - platform:fees:INR
+        - external:bank:INR
+    """
+    __tablename__ = "ledger"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tx_id = Column(String(100), nullable=False, index=True)  # ✅ FIXED: Added tx_id
+    account = Column(String(200), nullable=False, index=True)  # ✅ FIXED: Added account
+    amount = Column(Numeric(20, 8), nullable=False)  # Can be positive or negative
+    entry_type = Column(String(10), nullable=False)  # ✅ FIXED: 'credit' or 'debit'
+    ref = Column(String(100), nullable=True)  # Reference (deposit, reserve, settle, etc.)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Composite index for faster queries
+    __table_args__ = (
+        Index('ix_ledger_tx_account', 'tx_id', 'account'),
+        Index('ix_ledger_account_timestamp', 'account', 'timestamp'),
+    )
+
+    def __repr__(self):
+        return f"<Ledger(tx_id='{self.tx_id}', account='{self.account}', amount={self.amount}, type='{self.entry_type}')>"
+
+
+class Wallet(Base):
+    """
+    Aggregated wallet balances for quick access.
+    Maintained by ledger.py post_transaction() function.
+    
+    Tracks both available and reserved balances per user per currency.
+    """
+    __tablename__ = "wallets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)  # ✅ FIXED: Changed from username to user_id
+    currency = Column(String(10), nullable=False, index=True)  # ✅ FIXED: Added currency
+    available = Column(Numeric(20, 8), default=0, nullable=False)  # ✅ FIXED: Added available
+    reserved = Column(Numeric(20, 8), default=0, nullable=False)  # ✅ FIXED: Added reserved
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Ensure one wallet per user-currency combination
+    __table_args__ = (
+        UniqueConstraint('user_id', 'currency', name='uq_user_currency'),
+        Index('ix_wallet_user_currency', 'user_id', 'currency'),
+    )
+
+    def __repr__(self):
+        return f"<Wallet(user_id={self.user_id}, currency='{self.currency}', available={self.available}, reserved={self.reserved})>"
